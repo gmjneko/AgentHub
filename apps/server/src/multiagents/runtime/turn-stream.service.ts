@@ -1,10 +1,11 @@
 import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common'
 import type { Redis } from 'ioredis'
-import { REDIS_CLIENT } from '../../redis/redis.module.js'
+import { REDIS_CLIENT } from '../../redis/redis.tokens.js'
+import { MemoryRunStream } from '../../redis/memory-run-stream.js'
 import type { AgentEvent } from '../adapter/index.js'
 
 /**
- * TurnStream — 一轮对话（turn）的事件广播与回放底层，基于 Redis Streams。
+ * TurnStream — 一轮对话（turn）的事件广播与回放底层，按 REDIS_ENABLED 使用 Redis Streams 或本机内存。
  *
  * 一个 turn 对应一条 Redis Stream（`agent:turn:{turnId}:events`）。runTurn 把每条
  * AgentEvent `XADD` 进去；任意数量的订阅者各自从头 `XRANGE` 回放、再 `XREAD BLOCK`
@@ -32,9 +33,14 @@ export class TurnStream implements OnModuleInit, OnModuleDestroy {
     /** 活跃指针安全 TTL（秒）；进程崩溃未清理时自动过期，避免会话被永久锁死 */
     private static readonly ACTIVE_TTL_SEC = 2 * 60 * 60
 
-    constructor(@Inject(REDIS_CLIENT) private readonly redis: Redis) {}
+    private readonly memory: MemoryRunStream<AgentEvent> | null
+
+    constructor(@Inject(REDIS_CLIENT) private readonly redis: Redis | null) {
+        this.memory = redis ? null : new MemoryRunStream<AgentEvent>()
+    }
 
     onModuleInit(): void {
+        if (!this.redis) return
         this.subscriber = this.redis.duplicate()
         void this.subscriber.subscribe(TurnStream.CONTROL_CHANNEL).catch((err) => {
             this.logger.error(`Failed to subscribe control channel: ${this.errMsg(err)}`)
@@ -47,6 +53,7 @@ export class TurnStream implements OnModuleInit, OnModuleDestroy {
     }
 
     onModuleDestroy(): void {
+        this.memory?.destroy()
         this.subscriber?.disconnect()
         this.subscriber = null
     }
@@ -69,6 +76,7 @@ export class TurnStream implements OnModuleInit, OnModuleDestroy {
      * - 已有活跃轮 → 返回既存 turnId（调用方应拒绝新 turn 或引导订阅既存轮）
      */
     async acquireActiveTurn(sessionId: string, turnId: string): Promise<string> {
+        if (!this.redis) return this.memory!.acquire(sessionId, turnId)
         const key = this.activeKey(sessionId)
         while (true) {
             const ok = await this.redis.set(key, turnId, 'EX', TurnStream.ACTIVE_TTL_SEC, 'NX')
@@ -96,12 +104,14 @@ export class TurnStream implements OnModuleInit, OnModuleDestroy {
 
     /** 释放活跃指针（仅当持有者是自己这一轮时才删，避免误删后继轮） */
     async releaseActiveTurn(sessionId: string, turnId: string): Promise<void> {
+        if (!this.redis) return this.memory!.release(sessionId, turnId)
         const current = await this.redis.get(this.activeKey(sessionId))
         if (current === turnId) await this.redis.del(this.activeKey(sessionId))
     }
 
     /** 放弃尚未真正启动的 turn，清理 active 指针与归属索引。 */
     async abandonTurn(sessionId: string, turnId: string): Promise<void> {
+        if (!this.redis) return this.memory!.abandon(sessionId, turnId)
         await this.releaseActiveTurn(sessionId, turnId)
         const owner = await this.redis.get(this.turnSessionKey(turnId))
         if (owner === sessionId) await this.redis.del(this.turnSessionKey(turnId))
@@ -109,6 +119,7 @@ export class TurnStream implements OnModuleInit, OnModuleDestroy {
 
     /** 校验 turn 是否属于该 session；已完成但仍在 TTL 窗口内的 turn 也允许回放。 */
     async isTurnInSession(sessionId: string, turnId: string): Promise<boolean> {
+        if (!this.redis) return this.memory!.belongsTo(sessionId, turnId)
         const owner = await this.redis.get(this.turnSessionKey(turnId))
         if (owner) return owner === sessionId
 
@@ -119,11 +130,13 @@ export class TurnStream implements OnModuleInit, OnModuleDestroy {
 
     /** 读取某会话当前活跃 turnId（无则 null）。供 AgentChatView.activeTurnId 用 */
     async getActiveTurn(sessionId: string): Promise<string | null> {
+        if (!this.redis) return this.memory!.getActive(sessionId)
         return this.redis.get(this.activeKey(sessionId))
     }
 
     /** 批量读取多个会话的活跃 turnId，供列表视图一次性填充 */
     async getActiveTurns(sessionIds: string[]): Promise<Map<string, string>> {
+        if (!this.redis) return this.memory!.getActiveMany(sessionIds)
         const result = new Map<string, string>()
         if (sessionIds.length === 0) return result
         const values = await this.redis.mget(sessionIds.map((id) => this.activeKey(id)))
@@ -136,6 +149,7 @@ export class TurnStream implements OnModuleInit, OnModuleDestroy {
 
     /** 追加一条事件到 turn 的事件流 */
     async publish(turnId: string, event: AgentEvent): Promise<void> {
+        if (!this.redis) return this.memory!.publish(turnId, event)
         await this.redis.xadd(
             this.eventsKey(turnId),
             'MAXLEN',
@@ -149,6 +163,7 @@ export class TurnStream implements OnModuleInit, OnModuleDestroy {
 
     /** turn 收尾：给事件流加 TTL，让历史在窗口期内仍可回放，之后自动清理 */
     async finalize(turnId: string): Promise<void> {
+        if (!this.redis) return this.memory!.finalize(turnId)
         await this.redis.expire(this.eventsKey(turnId), TurnStream.STREAM_TTL_SEC)
         await this.redis.expire(this.turnSessionKey(turnId), TurnStream.STREAM_TTL_SEC)
     }
@@ -157,7 +172,13 @@ export class TurnStream implements OnModuleInit, OnModuleDestroy {
      * 订阅一个 turn 的事件：先回放已发生的全部事件，再实时追尾，遇 `done` 结束。
      * 每个订阅者用独立连接与游标，互不影响——这是多端围观的核心。
      */
-    async *subscribe(sessionId: string, turnId: string): AsyncIterable<AgentEvent> {
+    subscribe(sessionId: string, turnId: string): AsyncIterable<AgentEvent> {
+        if (this.memory) return this.memory.subscribe(sessionId, turnId)
+        return this.subscribeRedis(sessionId, turnId)
+    }
+
+    private async *subscribeRedis(sessionId: string, turnId: string): AsyncIterable<AgentEvent> {
+        if (!this.redis) return
         const conn = this.redis.duplicate()
         const key = this.eventsKey(turnId)
         try {
@@ -205,6 +226,10 @@ export class TurnStream implements OnModuleInit, OnModuleDestroy {
 
     /** 跨实例请求中止某 turn：广播到控制频道，由持有该 turn 的实例响应 */
     async requestAbort(turnId: string): Promise<void> {
+        if (!this.redis) {
+            this.abortHandler?.(turnId)
+            return
+        }
         await this.redis.publish(TurnStream.CONTROL_CHANNEL, turnId)
     }
 
@@ -217,6 +242,7 @@ export class TurnStream implements OnModuleInit, OnModuleDestroy {
      * 应关闭本回收（见 AGENT_RECLAIM_ON_BOOT），改由活跃指针的安全 TTL 兜底。
      */
     async reclaimStaleActiveTurns(): Promise<number> {
+        if (!this.redis) return 0
         let cursor = '0'
         let reclaimed = 0
         const pattern = 'agent:session:*:activeturn'

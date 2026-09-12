@@ -23,7 +23,7 @@
 | 端 / 包 | 技术 |
 | --- | --- |
 | **desktop**（当前主交付端） | Electron 39 + Vue 3 + TypeScript，electron-vite 构建，Tailwind 自建 token 设计系统；三进程模型（main / preload / renderer） |
-| **server** | NestJS 11 + TypeORM + MySQL + Redis（ioredis）+ JWT；Scalar API 文档；统一响应信封 + 全局异常 |
+| **server** | NestJS 11 + TypeORM + MySQL + optional Redis（ioredis）+ JWT；Scalar API 文档；统一响应信封 + 全局异常 |
 | **android**（轻量端） | Kotlin + Jetpack Compose（Material 3），单 Activity + `AppViewModel`，OkHttp 直连 REST/SSE |
 | **packages/shared** | 跨 desktop ↔ server 的共享 TypeScript 类型与协议契约 |
 | **packages/agent-core** | 框架无关 Agent 引擎：将 Claude Agent SDK / OpenAI Codex SDK 归一为统一 `AgentEvent` 流，含工作区 git diff/commit、产物预览与写回 |
@@ -57,7 +57,7 @@ AgentHub/
 - **Node.js** ≥ 20（开发使用 25.x）
 - **pnpm** ≥ 9（开发使用 11.x）
 - **MySQL** 8.x（后端数据库，默认库名 `agenthub`）
-- **Redis** 6+（后端缓存 / 活跃 turn 指针）
+- **Redis** 6+（仅 `REDIS_ENABLED=true` 时需要；关闭时使用本机内存模式）
 - 桌面端本地运行模式需要本机已安装相应 Agent CLI（Claude Code / Codex）
 
 ### 1. 安装依赖
@@ -70,8 +70,7 @@ pnpm install
 
 ```bash
 cd apps/server
-cp .env.example .env          # 按需填写 MySQL（运行apps/server/sql 中的 DDL 建表） / Redis / JWT 配置
-
+cp .env.example .env          # 按需填写 MySQL / Redis / JWT 配置；需要 Redis 时设 REDIS_ENABLED=true
 pnpm -F @agenthub/server dev   # nest start --watch，默认监听 :3000，API 前缀 /api
 ```
 

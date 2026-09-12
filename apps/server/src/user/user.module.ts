@@ -13,7 +13,7 @@ import { JwtAuthGuard } from './auth/jwt-auth.guard.js'
  *
  * 注册 User 实体（autoLoadEntities 已开，forFeature 即建表）；JwtModule 从 env 读取
  * 密钥与有效期。导出 JwtAuthGuard，供未来其他模块复用同一套鉴权。
- * 依赖全局 RedisModule 提供的 REDIS_CLIENT（token 黑名单），需在 AppModule 启用 RedisModule。
+ * 依赖全局 RedisModule 提供的 TtlStore（Redis 或本机内存 token 黑名单）。
  */
 @Module({
     imports: [

@@ -22,7 +22,7 @@ apps/server/
     ├── main.ts                       # 引导入口：全局 ValidationPipe + /api 前缀 + Scalar 文档
     ├── app.module.ts                 # 根模块：装配 Config / TypeORM / Redis + 各业务模块
     ├── common/                       # 跨模块基建：统一响应信封、BusinessException、全局过滤器/拦截器、Swagger 装饰器
-    ├── redis/                        # @Global Redis 模块，导出 REDIS_CLIENT token
+    ├── redis/                        # @Global Redis/本机内存模块，导出 TtlStore 与可选 REDIS_CLIENT
     ├── health/                       # 健康检查端点（探测 MySQL，Redis 探测当前注释）
     ├── chat-client/                  # 统一 LLM 客户端（OpenAI Responses/Completions + Anthropic）
     ├── user/                         # 用户管理 + JWT 认证基座（详见「用户管理模块」）
@@ -87,7 +87,9 @@ pnpm -F @agenthub/server test        # tsx + node:test 单元测试
 
 复制 `.env.example` → `.env`（或 `.env.local`），按需填写：
 
-- `MYSQL_*` / `REDIS_*` — 数据库与 Redis 连接；`MYSQL_TIMEZONE` 默认 `+08:00`（东八区），如果 MySQL 会话时间为 UTC 可设为 `Z`。
+- `MYSQL_*` — 数据库连接；`MYSQL_TIMEZONE` 默认 `+08:00`（东八区），如果 MySQL 会话时间为 UTC 可设为 `Z`。
+- `REDIS_ENABLED` — Redis 开关，严格取 `true` / `false`，默认 `false`。关闭时后端仅监听 `127.0.0.1`，临时状态使用进程内存；需要原有 Redis、多端围观与多实例能力时显式设为 `true`。
+- `REDIS_*` — `REDIS_ENABLED=true` 时使用的 Redis 连接配置。
 - `JWT_SECRET` — JWT 签名密钥，**生产环境务必改成强随机值**。
 - `JWT_EXPIRES_IN` — token 有效期，如 `7d` / `12h`（`ms` 包格式）。
 - `AGENTHUB_USER_SPACE_ROOT` — 多用户文件空间总根，默认 `~/.agenthub/users`。后端会为每个用户创建 `<root>/<userId>/skills`、`session`、`agent_home`、`agent_workspace`，所有 Agent Home、单聊/群聊工作区、session home、skill 来源目录都必须落在当前用户自己的空间内。
@@ -127,7 +129,7 @@ src/user/
 ├── dto/                    # register/login/update-user 入参、user-view 契约(interface)、user-response 文档类
 ├── mappers/user.mapper.ts  # 实体 → 视图，剥离 passwordHash
 └── auth/
-    ├── token.service.ts          # JWT 签发/校验 + Redis 黑名单吊销
+├── token.service.ts          # JWT 签发/校验 + Redis/内存黑名单吊销
     ├── jwt-auth.guard.ts         # 鉴权守卫（类比 Spring 的 OncePerRequestFilter）
     ├── current-user.decorator.ts # @CurrentUser() / @AuthPayload() 参数装饰器
     └── auth.types.ts             # JwtPayload / AuthenticatedRequest
@@ -151,8 +153,8 @@ src/user/
 ### 认证机制
 
 - **无状态 JWT**：登录签发 access token（含 `jti`），放 `Authorization: Bearer` 使用。
-- **服务端吊销**：退出登录/注销时把 token 的 `jti` 写入 Redis 黑名单（`auth:blacklist:<jti>`，TTL=token 剩余有效期），
-  `JwtAuthGuard` 每次校验时查黑名单 → 实现无状态 token 的即时失效。**故本模块依赖 Redis 在线**。
+- **服务端吊销**：退出登录/注销时把 token 的 `jti` 写入 Redis 或本机内存黑名单（`auth:blacklist:<jti>`，TTL=token 剩余有效期），
+  `JwtAuthGuard` 每次校验时查黑名单 → 实现无状态 token 的即时失效。
 - **密码**：仅存 `bcrypt` 哈希；实体侧 `select: false`，默认不随查询返回，登录时显式 select 后比对。
 
 ### 数据库

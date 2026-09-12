@@ -1,12 +1,11 @@
 import { Inject, Injectable } from '@nestjs/common'
-import type { Redis } from 'ioredis'
 import { basename } from 'node:path'
-import { REDIS_CLIENT } from '../../../redis/redis.module.js'
+import { TtlStore } from '../../../redis/ttl-store.service.js'
 import { BlackboardService } from '../blackboard/blackboard.service.js'
 import type { HotContext } from '../context/context-assembler.service.js'
 import { GroupDebugLogger } from '../debug/group-debug-logger.service.js'
 
-/** 短期热上下文（Redis，带 TTL；情况 A 专用，仅承载指代解析所需最小热信息） */
+/** 短期热上下文（Redis 或本机内存，带 TTL；仅承载指代解析所需最小热信息） */
 export interface ShortTermBuffer {
     recentUserIntents: string[]
     recentAgentOutputs: string[]
@@ -57,7 +56,7 @@ const HOT_WINDOW_SEC = 5 * 60
 @Injectable()
 export class ContinuityResolver {
     constructor(
-        @Inject(REDIS_CLIENT) private readonly redis: Redis,
+        @Inject(TtlStore) private readonly store: TtlStore,
         private readonly blackboard: BlackboardService,
         private readonly debug: GroupDebugLogger
     ) {}
@@ -199,17 +198,16 @@ export class ContinuityResolver {
 
     /** 收尾写 short_term_buffer（TTL）。情况 A 保持热窗口；B/C 也写以承接下一轮。 */
     async writeBuffer(groupId: string, agentId: string, buffer: ShortTermBuffer): Promise<void> {
-        await this.redis.set(
+        await this.store.set(
             this.bufferKey(groupId, agentId),
             JSON.stringify(buffer),
-            'EX',
             HOT_WINDOW_SEC
         )
         this.debug.log('group.continuity.write_buffer', { groupId, agentId, buffer })
     }
 
     async readBuffer(groupId: string, agentId: string): Promise<ShortTermBuffer | null> {
-        const raw = await this.redis.get(this.bufferKey(groupId, agentId))
+        const raw = await this.store.get(this.bufferKey(groupId, agentId))
         if (!raw) return null
         try {
             return JSON.parse(raw) as ShortTermBuffer

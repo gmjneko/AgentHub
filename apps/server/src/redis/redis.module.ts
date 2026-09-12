@@ -1,8 +1,11 @@
-import { Global, Module } from '@nestjs/common'
+import { Global, Inject, Module, OnModuleDestroy } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
-import { Redis } from 'ioredis'
+import type { Redis } from 'ioredis'
+import { REDIS_CLIENT } from './redis.tokens.js'
+import { createRedisClient } from './redis.config.js'
+import { TtlStore } from './ttl-store.service.js'
 
-export const REDIS_CLIENT = Symbol('REDIS_CLIENT')
+export { REDIS_CLIENT } from './redis.tokens.js'
 
 @Global()
 @Module({
@@ -10,18 +13,16 @@ export const REDIS_CLIENT = Symbol('REDIS_CLIENT')
         {
             provide: REDIS_CLIENT,
             inject: [ConfigService],
-            useFactory: (config: ConfigService): Redis => {
-                return new Redis({
-                    host: config.get<string>('REDIS_HOST', '127.0.0.1'),
-                    port: config.get<number>('REDIS_PORT', 6379),
-                    password: config.get<string>('REDIS_PASSWORD') || undefined,
-                    db: config.get<number>('REDIS_DB', 0),
-                    lazyConnect: false,
-                    maxRetriesPerRequest: 3
-                })
-            }
-        }
+            useFactory: (config: ConfigService): Redis | null => createRedisClient(config)
+        },
+        TtlStore
     ],
-    exports: [REDIS_CLIENT]
+    exports: [REDIS_CLIENT, TtlStore]
 })
-export class RedisModule {}
+export class RedisModule implements OnModuleDestroy {
+    constructor(@Inject(REDIS_CLIENT) private readonly redis: Redis | null) {}
+
+    onModuleDestroy(): void {
+        this.redis?.disconnect()
+    }
+}

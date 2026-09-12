@@ -31,7 +31,7 @@ import { WorkspaceFsModule } from './workspace-fs/workspace-fs.module.js'
                 charset: 'utf8mb4'
             })
         }),
-        // Redis：用户模块的 token 黑名单依赖它（@Global，导出 REDIS_CLIENT）
+        // Redis is optional; the global module provides either a client or null plus TtlStore.
         RedisModule,
         AgentsModule,
         GroupChatModule,

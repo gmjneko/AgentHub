@@ -13,7 +13,8 @@ import {
     UseGuards
 } from '@nestjs/common'
 import { ApiBearerAuth, ApiOperation, ApiProduces, ApiTags } from '@nestjs/swagger'
-import { Observable, from, map } from 'rxjs'
+import { Observable, map } from 'rxjs'
+import { fromEventStream } from '../common/streams/from-event-stream.js'
 import { SkipEnvelope } from '../common/decorators/skip-envelope.decorator.js'
 import { ApiEnvelope } from '../common/swagger/api-envelope.decorator.js'
 import { JwtAuthGuard } from '../user/auth/jwt-auth.guard.js'
@@ -197,7 +198,7 @@ export class AgentChatsController {
     @ApiOperation({
         summary: '订阅某一轮对话的事件流（SSE，回放 + 实时追尾）',
         description:
-            '返回 text/event-stream，先回放该轮已发生的全部 AgentEvent，再实时追尾，遇 done 结束。断开本连接不会中止该轮（后台继续运行）；可被多端同时订阅以实时围观。'
+            '返回 text/event-stream，先回放该轮已保留的 AgentEvent，再实时追尾，遇 done 结束。断开本连接不会中止该轮（后台继续运行）；Redis 模式支持多端围观，本机内存模式仅保障单客户端。'
     })
     @ApiProduces('text/event-stream')
     async converseEvents(
@@ -206,7 +207,7 @@ export class AgentChatsController {
         @Param('turnId') turnId: string
     ): Promise<Observable<MessageEvent>> {
         const stream = await this.manager.subscribeTurn(user.id, chatId, turnId)
-        return from(stream).pipe(map((ev): MessageEvent => ({ data: ev as object })))
+        return fromEventStream(stream).pipe(map((ev): MessageEvent => ({ data: ev as object })))
     }
 
     @Post(':chatId/turns/:turnId/abort')

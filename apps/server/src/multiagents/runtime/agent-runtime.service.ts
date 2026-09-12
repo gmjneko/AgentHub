@@ -205,7 +205,7 @@ export class AgentRuntimeService implements OnModuleInit, OnModuleDestroy {
         if (!(await this.turnStream.isTurnInSession(session.id, turnId))) {
             throw BusinessException.notFound(`Turn ${turnId} does not belong to chat ${chatId}`)
         }
-        return this.turnStream.subscribe(chatId, turnId)
+        return this.turnStream.subscribe(session.id, turnId)
     }
 
     async abortTurn(

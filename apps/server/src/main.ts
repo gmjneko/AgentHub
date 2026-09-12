@@ -12,6 +12,7 @@ import { AllExceptionsFilter } from './common/filters/all-exceptions.filter.js'
 import { ResponseInterceptor } from './common/interceptors/response.interceptor.js'
 import { BusinessException } from './common/exceptions/business.exception.js'
 import { ErrorCode } from './common/exceptions/error-code.js'
+import { isRedisEnabled, serverListenHost } from './redis/redis.config.js'
 
 const httpLogger = new Logger('HTTP')
 const API_BODY_LIMIT = '512kb'
@@ -102,10 +103,18 @@ async function bootstrap(): Promise<void> {
     }
 
     const port = config.get<number>('SERVER_PORT', 3000)
-    await app.listen(port)
-    Logger.log(`AgentHub server listening on http://localhost:${port}/api`, 'Bootstrap')
-    for (const address of getLanIPv4Addresses()) {
-        Logger.log(`AgentHub server listening on http://${address}:${port}/api`, 'Bootstrap')
+    const redisEnabled = isRedisEnabled(config)
+    const host = serverListenHost(config)
+    if (host) await app.listen(port, host)
+    else await app.listen(port)
+    Logger.log(
+        `AgentHub server listening on http://${host ?? '0.0.0.0'}:${port}/api (REDIS_ENABLED=${redisEnabled}, mode=${redisEnabled ? 'redis' : 'local-memory'})`,
+        'Bootstrap'
+    )
+    if (host === undefined) {
+        for (const address of getLanIPv4Addresses()) {
+            Logger.log(`AgentHub server listening on http://${address}:${port}/api`, 'Bootstrap')
+        }
     }
     if (docsEnabled) {
         Logger.log(`API docs (Scalar) on http://localhost:${port}/api/reference`, 'Bootstrap')

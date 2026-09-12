@@ -24,6 +24,7 @@ import {
 } from '@nestjs/swagger'
 import { FileInterceptor } from '@nestjs/platform-express'
 import { Observable, from, map } from 'rxjs'
+import { fromEventStream } from '../../common/streams/from-event-stream.js'
 import type {
     BlackboardArtifactPreview,
     BlackboardEventView,
@@ -242,7 +243,7 @@ export class GroupChatController {
     @ApiOperation({
         summary: '订阅群运行事件流（SSE，回放 + 实时追尾）',
         description:
-            '返回 text/event-stream，逐条推送 GroupRunEvent（编排计划 / 任务状态 / 成员 turn 透传 / 黑板更新 / 汇报），遇 done 结束。断开不中止运行，可多端围观。'
+            '返回 text/event-stream，逐条推送 GroupRunEvent（编排计划 / 任务状态 / 成员 turn 透传 / 黑板更新 / 汇报），遇 done 结束。断开不中止运行；Redis 模式支持多端围观，本机内存模式仅保障单客户端。'
     })
     @ApiProduces('text/event-stream')
     async runEvents(
@@ -251,11 +252,11 @@ export class GroupChatController {
         @Param('runId') runId: string
     ): Promise<Observable<MessageEvent>> {
         const stream = await this.manager.subscribeRun(user.id, id, runId)
-        return from(stream).pipe(map((ev): MessageEvent => ({ data: ev as object })))
+        return fromEventStream(stream).pipe(map((ev): MessageEvent => ({ data: ev as object })))
     }
 
     @Post(':id/runs/:runId/abort')
-    @ApiOperation({ summary: '中止整个群运行（跨实例广播，连带中止其下成员 turn）' })
+    @ApiOperation({ summary: '中止整个群运行（Redis 模式跨实例广播，连带中止其下成员 turn）' })
     @ApiEnvelope(AbortGroupRunResultDto, { status: 201 })
     abort(
         @CurrentUser() user: User,

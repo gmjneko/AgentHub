@@ -1,10 +1,11 @@
 import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common'
 import type { Redis } from 'ioredis'
 import type { GroupRunEvent } from '@agenthub/shared'
-import { REDIS_CLIENT } from '../../../redis/redis.module.js'
+import { REDIS_CLIENT } from '../../../redis/redis.tokens.js'
+import { MemoryRunStream } from '../../../redis/memory-run-stream.js'
 
 /**
- * GroupRunStream — 一次群运行（group run）的事件广播与回放底层，基于 Redis Streams。
+ * GroupRunStream — 一次群运行（group run）的事件广播与回放底层，按 REDIS_ENABLED 使用 Redis Streams 或本机内存。
  *
  * 沿用单聊 TurnStream 范式，但：
  * - 事件类型是 `GroupRunEvent`（编排计划 / 任务状态 / 成员 turn 透传 / 黑板更新 / 汇报 / done）；
@@ -25,9 +26,14 @@ export class GroupRunStream implements OnModuleInit, OnModuleDestroy {
     private static readonly STREAM_TTL_SEC = 60 * 60
     private static readonly ACTIVE_TTL_SEC = 2 * 60 * 60
 
-    constructor(@Inject(REDIS_CLIENT) private readonly redis: Redis) {}
+    private readonly memory: MemoryRunStream<GroupRunEvent> | null
+
+    constructor(@Inject(REDIS_CLIENT) private readonly redis: Redis | null) {
+        this.memory = redis ? null : new MemoryRunStream<GroupRunEvent>()
+    }
 
     onModuleInit(): void {
+        if (!this.redis) return
         this.subscriber = this.redis.duplicate()
         void this.subscriber.subscribe(GroupRunStream.CONTROL_CHANNEL).catch((err) => {
             this.logger.error(`Failed to subscribe control channel: ${this.errMsg(err)}`)
@@ -40,6 +46,7 @@ export class GroupRunStream implements OnModuleInit, OnModuleDestroy {
     }
 
     onModuleDestroy(): void {
+        this.memory?.destroy()
         this.subscriber?.disconnect()
         this.subscriber = null
     }
@@ -58,6 +65,7 @@ export class GroupRunStream implements OnModuleInit, OnModuleDestroy {
 
     /** 抢占群活跃轮锁。返回最终持锁的 runId：== 传入则抢占成功，否则群已有活跃轮。 */
     async acquireActiveRun(groupId: string, runId: string): Promise<string> {
+        if (!this.redis) return this.memory!.acquire(groupId, runId)
         const key = this.activeKey(groupId)
         while (true) {
             const ok = await this.redis.set(key, runId, 'EX', GroupRunStream.ACTIVE_TTL_SEC, 'NX')
@@ -81,17 +89,20 @@ export class GroupRunStream implements OnModuleInit, OnModuleDestroy {
     }
 
     async releaseActiveRun(groupId: string, runId: string): Promise<void> {
+        if (!this.redis) return this.memory!.release(groupId, runId)
         const current = await this.redis.get(this.activeKey(groupId))
         if (current === runId) await this.redis.del(this.activeKey(groupId))
     }
 
     async abandonRun(groupId: string, runId: string): Promise<void> {
+        if (!this.redis) return this.memory!.abandon(groupId, runId)
         await this.releaseActiveRun(groupId, runId)
         const owner = await this.redis.get(this.runGroupKey(runId))
         if (owner === groupId) await this.redis.del(this.runGroupKey(runId))
     }
 
     async isRunInGroup(groupId: string, runId: string): Promise<boolean> {
+        if (!this.redis) return this.memory!.belongsTo(groupId, runId)
         const owner = await this.redis.get(this.runGroupKey(runId))
         if (owner) return owner === groupId
         const active = await this.redis.get(this.activeKey(groupId))
@@ -99,10 +110,12 @@ export class GroupRunStream implements OnModuleInit, OnModuleDestroy {
     }
 
     async getActiveRun(groupId: string): Promise<string | null> {
+        if (!this.redis) return this.memory!.getActive(groupId)
         return this.redis.get(this.activeKey(groupId))
     }
 
     async getActiveRuns(groupIds: string[]): Promise<Map<string, string>> {
+        if (!this.redis) return this.memory!.getActiveMany(groupIds)
         const result = new Map<string, string>()
         if (groupIds.length === 0) return result
         const values = await this.redis.mget(groupIds.map((id) => this.activeKey(id)))
@@ -114,6 +127,7 @@ export class GroupRunStream implements OnModuleInit, OnModuleDestroy {
     }
 
     async publish(runId: string, event: GroupRunEvent): Promise<void> {
+        if (!this.redis) return this.memory!.publish(runId, event)
         await this.redis.xadd(
             this.eventsKey(runId),
             'MAXLEN',
@@ -126,11 +140,18 @@ export class GroupRunStream implements OnModuleInit, OnModuleDestroy {
     }
 
     async finalize(runId: string): Promise<void> {
+        if (!this.redis) return this.memory!.finalize(runId)
         await this.redis.expire(this.eventsKey(runId), GroupRunStream.STREAM_TTL_SEC)
         await this.redis.expire(this.runGroupKey(runId), GroupRunStream.STREAM_TTL_SEC)
     }
 
-    async *subscribe(groupId: string, runId: string): AsyncIterable<GroupRunEvent> {
+    subscribe(groupId: string, runId: string): AsyncIterable<GroupRunEvent> {
+        if (this.memory) return this.memory.subscribe(groupId, runId)
+        return this.subscribeRedis(groupId, runId)
+    }
+
+    private async *subscribeRedis(groupId: string, runId: string): AsyncIterable<GroupRunEvent> {
+        if (!this.redis) return
         const conn = this.redis.duplicate()
         const key = this.eventsKey(runId)
         try {
@@ -172,6 +193,10 @@ export class GroupRunStream implements OnModuleInit, OnModuleDestroy {
     }
 
     async requestAbort(runId: string): Promise<void> {
+        if (!this.redis) {
+            this.abortHandler?.(runId)
+            return
+        }
         await this.redis.publish(GroupRunStream.CONTROL_CHANNEL, runId)
     }
 
@@ -181,6 +206,7 @@ export class GroupRunStream implements OnModuleInit, OnModuleDestroy {
 
     /** 启动时回收残留活跃轮（单实例部署）：补发 done、设 TTL、删指针。 */
     async reclaimStaleActiveRuns(): Promise<number> {
+        if (!this.redis) return 0
         let cursor = '0'
         let reclaimed = 0
         const pattern = 'group:*:activerun'
