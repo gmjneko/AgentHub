@@ -40,43 +40,45 @@ export interface AgentTodoItem {
   status: AgentTodoStatus
 }
 
-export type AgentEvent =
+/** Serializable host interaction. Answers are keyed by question id. */
+export interface AgentInteractionResponse {
+  decision: 'approve' | 'deny' | 'answer' | 'cancel'
+  answers?: Record<string, string>
+}
+
+export interface AgentInteractionRequest {
+  requestId: string
+  toolUseId: string
+  toolName: string
+  input: Record<string, unknown>
+  message: string
+  questions?: import('./chat.js').AgentQuestion[]
+}
+
+/** All text events are item snapshots, never token deltas. */
+export type AgentEvent = { turnId?: string; itemId?: string } & (
   | { type: 'session_started'; vendor: AgentVendor; sessionId: string }
   | { type: 'turn_started'; vendor: AgentVendor }
-  | { type: 'progress'; vendor: AgentVendor; text: string; itemId?: string }
-  | { type: 'text'; vendor: AgentVendor; text: string; itemId?: string }
-  | { type: 'thinking'; vendor: AgentVendor; text: string; itemId?: string }
+  | { type: 'progress'; vendor: AgentVendor; text: string }
+  | { type: 'text'; vendor: AgentVendor; text: string }
+  | { type: 'thinking'; vendor: AgentVendor; text: string }
   | {
-      type: 'tool_use'
-      vendor: AgentVendor
-      id: string
-      name: string
-      input: unknown
-      status: ToolCallStatus
+      type: 'tool_use'; vendor: AgentVendor; id: string; name: string
+      input: unknown; status: ToolCallStatus
+      kind?: 'shell' | 'file_change' | 'web_search' | 'mcp' | 'native'
+      mcp?: { server: string; tool: string }
     }
-  | {
-      type: 'tool_result'
-      vendor: AgentVendor
-      toolUseId: string
-      output: unknown
-      isError?: boolean
-    }
+  | { type: 'tool_result'; vendor: AgentVendor; toolUseId: string; output: unknown; isError?: boolean }
   | { type: 'todo'; vendor: AgentVendor; items: AgentTodoItem[] }
   | { type: 'plan'; vendor: AgentVendor; plan: string }
-  | {
-      type: 'turn_completed'
-      vendor: AgentVendor
-      finalText?: string
-      usage?: AgentUsage
-    }
-  | { type: 'error'; vendor: AgentVendor; message: string; fatal?: boolean }
-  | {
-      type: 'done'
-      vendor: AgentVendor
-      success: boolean
-      finalText?: string
-      usage?: AgentUsage
-    }
+  | { type: 'permission_request' | 'user_input_request'; vendor: AgentVendor; request: AgentInteractionRequest }
+  | { type: 'permission_resolved' | 'user_input_resolved'; vendor: AgentVendor; requestId: string; response: AgentInteractionResponse }
+  | { type: 'turn_completed'; vendor: AgentVendor; success?: boolean; finalText?: string; structuredOutput?: unknown; usage?: AgentUsage }
+  | { type: 'error'; vendor: AgentVendor; message: string; fatal?: boolean; code?: string }
+  | { type: 'done'; vendor: AgentVendor; success: boolean; finalText?: string; structuredOutput?: unknown; usage?: AgentUsage }
+)
+
+export type AgentInteractionEvent = Extract<AgentEvent, { type: 'permission_request' | 'user_input_request' }>
 
 export type AgentChatMessageRole = 'user' | 'agent' | 'system'
 
@@ -130,13 +132,16 @@ export interface UpdateAgentChatMessagePayload {
   pinned?: boolean
 }
 
-/** Vendor capability matrix (asymmetric: codex lacks mcp). */
+/** Vendor capability matrix; SDK limitations remain explicit. */
 export interface AgentCapabilities {
   supportsSystemPrompt: boolean
   supportsSkills: boolean
   supportsMcp: boolean
   /** can resume across processes by external sessionId */
   supportsResumeById: boolean
+  supportsInteractivePermissions?: boolean
+  supportsUserInput?: boolean
+  mcpTransports?: readonly ('stdio' | 'http' | 'sse')[]
 }
 
 export type AgentPermissionMode =
@@ -159,13 +164,19 @@ export const VENDOR_CAPABILITIES: Record<AgentVendor, AgentCapabilities> = {
     supportsSystemPrompt: true,
     supportsSkills: true,
     supportsMcp: true,
-    supportsResumeById: true
+    supportsResumeById: true,
+    supportsInteractivePermissions: true,
+    supportsUserInput: true,
+    mcpTransports: ['stdio', 'http', 'sse']
   },
   codex: {
     supportsSystemPrompt: true,
     supportsSkills: true,
-    supportsMcp: false,
-    supportsResumeById: true
+    supportsMcp: true,
+    supportsResumeById: true,
+    supportsInteractivePermissions: false,
+    supportsUserInput: false,
+    mcpTransports: ['stdio', 'http']
   }
 }
 

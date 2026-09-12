@@ -51,6 +51,7 @@ export class LocalRunnerService {
   private engines: LocalEngineAvailability = { claude: false, codex: false }
   /** 进行中的 run：runId -> AbortController。 */
   private readonly runs = new Map<string, AbortController>()
+  private readonly interactionResponses = new Map<string, { runId: string; resolve: (response: import('@agenthub/shared').AgentInteractionResponse) => void }>()
   private readonly git = new WorkspaceGit()
 
   /** 启动（或用新 token 重启）。renderer 登录/初始化后调用。 */
@@ -139,6 +140,11 @@ export class LocalRunnerService {
       case 'run.abort':
         this.runs.get(msg.runId)?.abort()
         return
+      case 'run.interaction.response':
+        if (this.interactionResponses.get(msg.requestId)?.runId === msg.runId) {
+          this.interactionResponses.get(msg.requestId)?.resolve(msg.response)
+        }
+        return
       case 'rpc':
         await this.handleRpc(msg)
         return
@@ -158,7 +164,16 @@ export class LocalRunnerService {
       if (msg.resumeSessionId) adapter.resumeWith(msg.resumeSessionId)
       for await (const event of adapter.send(msg.prompt, {
         signal: abort.signal,
-        ...(msg.outputSchema ? { outputSchema: msg.outputSchema } : {})
+        ...(msg.outputSchema ? { outputSchema: msg.outputSchema } : {}),
+        turnId: msg.runId,
+        onInteraction: async (request, signal) => new Promise((resolve, reject) => {
+          const id = request.request.requestId
+          const cleanup = (): void => { this.interactionResponses.delete(id); signal.removeEventListener('abort', onAbort) }
+          const onAbort = (): void => { cleanup(); reject(new Error('Interaction cancelled')) }
+          if (signal.aborted) { onAbort(); return }
+          signal.addEventListener('abort', onAbort, { once: true })
+          this.interactionResponses.set(id, { runId: msg.runId, resolve: response => { cleanup(); resolve(response) } })
+        })
       })) {
         forward(event)
       }

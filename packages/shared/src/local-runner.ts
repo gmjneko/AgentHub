@@ -23,7 +23,7 @@ import type {
 import type { ArtifactFilePreview } from './blackboard.js'
 
 /** 当前协议版本。握手时桌面端上报，服务器据此判断兼容性。 */
-export const LOCAL_RUNNER_PROTOCOL_VERSION = 1
+export const LOCAL_RUNNER_PROTOCOL_VERSION = 2
 
 /** 桌面端探测到的本机可用引擎。值为 false 表示该 vendor 的 CLI 未安装/不可用。 */
 export interface LocalEngineAvailability {
@@ -115,6 +115,7 @@ export interface RunnerRunEventMessage {
   event: AgentEvent
 }
 
+
 /** RPC 应答（对应服务器下发的 rpc 请求）。 */
 export type RunnerRpcResultMessage =
   | { type: 'rpc.result'; requestId: string; ok: true; result: unknown }
@@ -146,6 +147,14 @@ export interface ServerRunStartMessage {
   outputSchema?: Record<string, unknown>
 }
 
+/** Host answer is routed back to the desktop executing this SDK turn. */
+export interface ServerInteractionResponseMessage {
+  type: 'run.interaction.response'
+  runId: string
+  requestId: string
+  response: import('./agent.js').AgentInteractionResponse
+}
+
 /** 请求中止指定 run（客户端断连 / 超时 / 用户主动 abort）。 */
 export interface ServerRunAbortMessage {
   type: 'run.abort'
@@ -170,3 +179,4 @@ export type ServerToRunnerMessage =
   | ServerRunAbortMessage
   | ServerRpcMessage
   | ServerPingMessage
+  | ServerInteractionResponseMessage

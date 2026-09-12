@@ -5,13 +5,14 @@ import type {
   AgentAdapterConfig,
   AgentCapabilities,
   AgentEvent,
-  AgentTodoItem,
   AgentUsage,
   SendOptions,
   ToolCallStatus
 } from './types.js'
 import { CODEX_CAPABILITIES } from './capabilities.js'
 import { NOOP_LOGGER, type CoreLogger } from '../logger.js'
+import { codexMcp, AgentConfigurationError } from './mcp.js'
+import { normalizeEvents } from './event-stream.js'
 
 /** Codex 的 effort 取值集与统一接口对齐 */
 function mapEffort(
@@ -44,6 +45,7 @@ function buildCodexEnv(config: AgentAdapterConfig): Record<string, string> {
 
 function buildCodexConfig(config: AgentAdapterConfig): CodexOptions['config'] | undefined {
   const codexConfig: CodexOptions['config'] = {}
+  if (config.mcpServers) codexConfig.mcp_servers = codexMcp(config.mcpServers)
   const systemPrompt = config.systemPrompt?.trim()
   if (systemPrompt) codexConfig.instructions = systemPrompt
 
@@ -118,18 +120,19 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   async *send(prompt: string, options?: SendOptions): AsyncIterable<AgentEvent> {
-    if (this.busy) {
-      throw new Error(`CodexAdapter[${this.id}] is busy — wait for the previous send() to finish`)
-    }
+    if (this.busy) throw new Error(`CodexAdapter[${this.id}] is busy`)
     this.busy = true
+    try { yield* normalizeEvents(this.vendor, this.run(prompt, options), options) }
+    finally { this.busy = false }
+  }
 
+  private async *run(prompt: string, options?: SendOptions): AsyncIterable<AgentEvent> {
     let success = true
     let finalText: string | undefined
     let structuredOutput: unknown
     let usageOut: AgentUsage | undefined
     let latestAgentText: string | undefined
     let latestAgentItemId: string | undefined
-    let latestTodoItems: AgentTodoItem[] | undefined
     let pendingTextEvent: Extract<AgentEvent, { type: 'text' }> | undefined
     let textCandidates = 0
     let textEmitted = false
@@ -152,13 +155,18 @@ export class CodexAdapter implements AgentAdapter {
     }
 
     try {
+      options?.signal?.throwIfAborted()
+      if (this.config.permissionMode && ['default', 'acceptEdits', 'auto'].includes(this.config.permissionMode)) {
+        throw new AgentConfigurationError('Codex runStreamed does not support interactive permission callbacks; use plan, dontAsk or bypassPermissions')
+      }
+      if (this.config.allowedTools !== undefined) throw new AgentConfigurationError('Codex runStreamed cannot enforce allowedTools; omit it to use native tools')
       // 首次调用：开新 thread 或按 resumeId 续接；之后复用以维持对话上下文。
       // 放在 try 内，确保动态加载 / 建 thread 失败也能走到 done + 释放 busy。
       // 默认自动化全开；轻量/计划模式用只读沙箱，避免无意文件改动。
       if (!this.thread) {
         const codex = this.ensureCodex()
         const effort = mapEffort(this.config.reasoningEffort)
-        const readOnly = this.config.permissionMode === 'plan'
+        const readOnly = this.config.permissionMode === 'plan' || this.config.permissionMode === 'dontAsk'
         const threadOptions = {
           ...(this.config.model ? { model: this.config.model } : {}),
           sandboxMode: readOnly ? ('read-only' as const) : ('danger-full-access' as const),
@@ -186,7 +194,6 @@ export class CodexAdapter implements AgentAdapter {
           latestAgentItemId = ev.item.id
         }
         for (let out of this.translate(ev)) {
-          if (out.type === 'todo') latestTodoItems = out.items
           if (out.type === 'text') {
             // Codex may emit progress notes and the final answer as separate
             // agent_message items. Keep the latest candidate for final text,
@@ -217,27 +224,13 @@ export class CodexAdapter implements AgentAdapter {
             pendingTextEvent = undefined
             if (finalText) out = { ...out, finalText }
             usageOut = out.usage
-            // Codex bug workaround: Codex 不会把 todo_list 的各项标记为
-            // completed——即便任务全部做完，最终快照里仍是 pending（它只是
-            // 把同一份 all-pending 列表在开头和结尾各发一次）。turn 成功结束
-            // 时，把残留的 pending 项视觉上补成 completed，以反映真实进度。
-            // 仅在成功路径执行（turn.failed 会先把 success 置 false）。
-            if (success && latestTodoItems?.some((t) => t.status !== 'completed')) {
-              const completed = latestTodoItems.map((t) => ({
-                ...t,
-                status: 'completed' as const
-              }))
-              latestTodoItems = completed
-              this.logger.debug('[out] todo (codex pending->completed fixup)')
-              yield { type: 'todo', vendor: this.vendor, items: completed }
-            }
           } else {
             if (out.type === 'error' && out.fatal) success = false
             // Codex 在最终 agent_message 之后还会补发一条 todo_list 终态快照。
             // 这类收尾事件不应把待定的最终文本冲刷进 progress 面板——否则最终
             // 答案会被错误地塞进“运行过程”，且 finalText 被清空导致消息为空。
             // 中间叙述后面跟的是真正的工具调用，仍由那些事件正常 flush。
-            if (out.type !== 'todo') {
+            if (out.type === 'tool_use') {
               const progress = flushPendingProgress()
               if (progress) {
                 this.logger.debug('[out] progress')
@@ -255,6 +248,7 @@ export class CodexAdapter implements AgentAdapter {
         type: 'error',
         vendor: this.vendor,
         message: err instanceof Error ? err.message : String(err),
+        code: err instanceof AgentConfigurationError ? err.code : undefined,
         fatal: true
       }
     } finally {
@@ -288,7 +282,6 @@ export class CodexAdapter implements AgentAdapter {
         structuredOutput,
         usage: usageOut
       }
-      this.busy = false
     }
   }
 
@@ -369,16 +362,17 @@ export class CodexAdapter implements AgentAdapter {
         }
         return
       case 'command_execution': {
-        const status = toToolStatus(item.status)
+        const status = item.status === 'completed' && (item.exit_code ?? 0) !== 0 ? 'failed' : toToolStatus(item.status)
         yield {
           type: 'tool_use',
           vendor: this.vendor,
           id: item.id,
           name: 'shell',
           input: { command: item.command },
+          kind: 'shell',
           status
         }
-        if (status !== 'started') {
+        if (phase === 'item.completed' && status !== 'started') {
           yield {
             type: 'tool_result',
             vendor: this.vendor,
@@ -399,6 +393,7 @@ export class CodexAdapter implements AgentAdapter {
           id: item.id,
           name: 'file_change',
           input: { changes: item.changes },
+          kind: 'file_change',
           status
         }
         return
@@ -411,21 +406,23 @@ export class CodexAdapter implements AgentAdapter {
           id: item.id,
           name: `mcp:${item.server}/${item.tool}`,
           input: item.arguments,
+          kind: 'mcp',
+          mcp: { server: item.server, tool: item.tool },
           status
         }
-        if (status === 'completed' && item.result) {
+        if (phase === 'item.completed' && status === 'completed') {
           yield {
             type: 'tool_result',
             vendor: this.vendor,
             toolUseId: item.id,
-            output: item.result
+            output: item.result ?? null
           }
-        } else if (status === 'failed' && item.error) {
+        } else if (phase === 'item.completed' && status === 'failed') {
           yield {
             type: 'tool_result',
             vendor: this.vendor,
             toolUseId: item.id,
-            output: item.error.message,
+            output: item.error ?? { message: 'MCP tool failed without an error payload' },
             isError: true
           }
         }
@@ -438,6 +435,7 @@ export class CodexAdapter implements AgentAdapter {
           id: item.id,
           name: 'web_search',
           input: { query: item.query },
+          kind: 'web_search',
           status: phase === 'item.completed' ? 'completed' : 'started'
         }
         return

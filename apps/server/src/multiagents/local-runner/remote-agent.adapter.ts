@@ -73,6 +73,13 @@ export class RemoteAgentAdapter implements AgentAdapter {
             for await (const event of stream) {
                 if (event.type === 'session_started') this._sessionId = event.sessionId
                 if (event.type === 'done') sawDone = true
+                if ((event.type === 'permission_request' || event.type === 'user_input_request') && options?.onInteraction) {
+                    const pending = options.onInteraction(event, options.signal ?? new AbortController().signal)
+                    yield event
+                    const response = await pending
+                    this.gateway.respondInteraction(this.userId, runId, event.request.requestId, response)
+                    continue
+                }
                 yield event
             }
         } catch (err) {

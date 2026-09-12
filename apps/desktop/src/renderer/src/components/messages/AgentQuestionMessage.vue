@@ -9,7 +9,7 @@ import SenderAvatar from './SenderAvatar.vue'
 const props = defineProps<{ message: AgentQuestionMessage; disabled?: boolean }>()
 
 const emit = defineEmits<{
-  (e: 'submit', payload: { message: AgentQuestionMessage; text: string; mentions: string[] }): void
+  (e: 'submit', payload: { message: AgentQuestionMessage; text: string; mentions: string[]; answers?: Record<string, string> }): void
 }>()
 
 interface Draft {
@@ -73,7 +73,8 @@ function submit(): void {
   if (!canSubmit.value) return
   const text = compose()
   if (!text) return
-  emit('submit', { message: props.message, text, mentions: [props.message.sender.id] })
+  const values = Object.fromEntries(props.message.questions.map(q => [q.id, [...q.options.filter(o => answers[q.id]?.opts.includes(o.id)).map(o => props.message.interaction?.kind === 'permission' ? o.id : o.label), answers[q.id]?.text.trim()].filter(Boolean).join('、')]))
+  emit('submit', { message: props.message, text, mentions: [props.message.sender.id], answers: values })
 }
 </script>
 

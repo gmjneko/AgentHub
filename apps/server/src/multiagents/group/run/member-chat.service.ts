@@ -1,3 +1,5 @@
+import { AgentInteractionService } from '../../interactions/agent-interaction.service.js'
+import { TurnDeadline } from '../../adapter/index.js'
 import { Injectable, Logger } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
@@ -101,7 +103,8 @@ export class MemberChatService {
         private readonly messages: AgentMessageHistoryService,
         private readonly groupMessages: GroupMessageService,
         private readonly runStream: GroupRunStream,
-        private readonly debug: GroupDebugLogger
+        private readonly debug: GroupDebugLogger,
+        private readonly interactions: AgentInteractionService
     ) {}
 
     async chat(params: MemberChatParams): Promise<MemberChatResult> {
@@ -185,10 +188,6 @@ export class MemberChatService {
     ): Promise<{ finalText: string; fatal: string | null; agentMessageId: string | null }> {
         const provider = await this.resolveProvider(params.userId, agent)
         const config = agentToConfig(agent, session, provider.apiKey, provider.baseUrl, session.id)
-        config.allowedTools = []
-        config.skills = []
-        config.mcpServers = undefined
-        config.permissionMode = 'plan'
         const adapter = createAgent(agent.vendor, config)
 
         this.debug.log('group.member_chat.turn_started', {
@@ -207,32 +206,33 @@ export class MemberChatService {
         let finalFromDone: string | null = null
         let structuredText: string | null = null
         let fatal: string | null = null
+        let sawDone = false
 
-        let timeout: NodeJS.Timeout | null = null
-        const timeoutPromise = new Promise<never>((_, reject) => {
-            timeout = setTimeout(
-                () => reject(new Error('member chat turn timed out')),
-                LIGHTWEIGHT_CHAT_TIMEOUT_MS
-            )
-            timeout.unref?.()
+        const deadline = new TurnDeadline(LIGHTWEIGHT_CHAT_TIMEOUT_MS, params.signal)
+        const turnId = randomUUID()
+        const onInteraction: import('../../adapter/index.js').SendOptions['onInteraction'] = (event, signal) => deadline.waitForInput(async () => {
+            return this.interactions.request({ userId: params.userId, sessionId: session.id, turnId, groupId: params.group.id }, event, signal)
         })
 
         await this.messages.saveMessage(params.userId, agent.id, session.id, 'user', prompt)
         try {
             const iterator = adapter
                 .send(prompt, {
-                    signal: params.signal,
+                    signal: deadline.signal, turnId, onInteraction,
                     outputSchema: LIGHTWEIGHT_CHAT_SCHEMA
                 })
                 [Symbol.asyncIterator]()
             while (true) {
-                const next = await Promise.race([iterator.next(), timeoutPromise])
+                const next = await Promise.race([iterator.next(), deadline.expired])
                 if (next.done) break
                 const ev = next.value
                 const normalized = normalizeMemberChatStreamEvent(ev)
                 if (ev.type === 'done') {
+                    sawDone = true;
+                    if (!ev.success) fatal ??= 'Agent turn failed'
                     const displayText = displayTextFrom(ev.finalText, ev.structuredOutput)
                     if (displayText) finalFromDone = displayText
+                    if (!ev.success) fatal ??= 'Agent turn failed'
                     const parsed = parseStructuredText(ev.structuredOutput)
                     if (parsed) structuredText = parsed
                     await this.publishMemberEvent(params, normalized)
@@ -258,7 +258,8 @@ export class MemberChatService {
         } catch (err) {
             fatal ??= this.errMsg(err)
         } finally {
-            if (timeout) clearTimeout(timeout)
+            deadline.close()
+            if (!sawDone) fatal ??= 'Agent stream ended without done'
         }
 
         const rawFinalText = finalFromDone ?? textParts.join('')

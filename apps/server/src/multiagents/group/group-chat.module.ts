@@ -53,6 +53,7 @@ import {
     ORCHESTRATOR_HANDOFF_REVIEWER
 } from './run/orchestrator-handoff-reviewer.js'
 import { GroupDebugLogger } from './debug/group-debug-logger.service.js'
+import { AgentInteractionModule } from '../interactions/agent-interaction.module.js'
 
 /**
  * GroupChatModule — 群聊协作（黑板 / Orchestrator / dispatch）。
@@ -87,6 +88,7 @@ import { GroupDebugLogger } from './debug/group-debug-logger.service.js'
         UserWorkspaceModule,
         PlatformProviderModule,
         ChatClientModule
+        ,AgentInteractionModule
     ],
     controllers: [GroupChatController],
     providers: [

@@ -1,3 +1,5 @@
+import { AgentInteractionService } from '../../interactions/agent-interaction.service.js'
+import { TurnDeadline } from '../../adapter/index.js'
 import { Injectable, Logger } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
@@ -153,7 +155,8 @@ export class DispatchService {
         private readonly groupMessages: GroupMessageService,
         private readonly continuity: ContinuityResolver,
         private readonly runStream: GroupRunStream,
-        private readonly debug: GroupDebugLogger
+        private readonly debug: GroupDebugLogger,
+        private readonly interactions: AgentInteractionService
     ) {}
 
     async dispatch(params: DispatchParams): Promise<DispatchResult> {
@@ -534,14 +537,12 @@ export class DispatchService {
         const textParts: string[] = []
         let finalFromDone: string | null = null
         let fatal: string | null = null
+        let sawDone = false
 
-        let timeout: NodeJS.Timeout | null = null
-        const timeoutPromise = new Promise<never>((_, reject) => {
-            timeout = setTimeout(
-                () => reject(new Error('member turn timed out')),
-                DEFAULT_TURN_TIMEOUT_MS
-            )
-            timeout.unref?.()
+        const deadline = new TurnDeadline(DEFAULT_TURN_TIMEOUT_MS, params.signal)
+        const turnId = randomUUID()
+        const onInteraction: import('../../adapter/index.js').SendOptions['onInteraction'] = (event, signal) => deadline.waitForInput(async () => {
+            return this.interactions.request({ userId: params.userId, sessionId: session.id, turnId, groupId: params.group.id }, event, signal)
         })
 
         await this.messages.saveMessage(
@@ -552,13 +553,16 @@ export class DispatchService {
             params.objective
         )
         try {
-            const iterator = adapter.send(prompt, { signal: params.signal })[Symbol.asyncIterator]()
+            const iterator = adapter.send(prompt, { signal: deadline.signal, turnId, onInteraction })[Symbol.asyncIterator]()
             while (true) {
-                const next = await Promise.race([iterator.next(), timeoutPromise])
+                const next = await Promise.race([iterator.next(), deadline.expired])
                 if (next.done) break
                 const ev = next.value
                 if (ev.type === 'done') {
+                    sawDone = true;
+                    if (!ev.success) fatal ??= 'Agent turn failed'
                     if (ev.finalText) finalFromDone = ev.finalText
+                    await this.publishMemberEvent(params, ev)
                     continue
                 }
                 if (ev.type === 'text') textParts.push(ev.text)
@@ -576,7 +580,8 @@ export class DispatchService {
         } catch (err) {
             fatal ??= this.errMsg(err)
         } finally {
-            if (timeout) clearTimeout(timeout)
+            deadline.close()
+            if (!sawDone) fatal ??= 'Agent stream ended without done'
         }
 
         const finalText = (finalFromDone ?? textParts.join('')).trim()

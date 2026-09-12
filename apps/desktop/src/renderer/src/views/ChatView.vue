@@ -25,7 +25,7 @@ import type {
   TextMessage,
   WorkspaceDiffSummary
 } from '../api'
-import { ApiError, agentApi } from '../api'
+import { ApiError, agentApi, interactionApi } from '../api'
 import { agentChatApi, type AgentConverseHandlers, type AgentConverseStream } from '../api/agents'
 import { groupChatApi, type GroupRunStream } from '../api/group-chats'
 import { authState } from '../stores/auth'
@@ -1031,6 +1031,24 @@ function upsertPlanStep(chatId: string, plan: string): void {
   })
 }
 
+function showInteraction(key: string, event: import('@agenthub/shared').AgentInteractionEvent): void {
+  const sessionKey = key.split(':run:')[0]
+  const id = event.request.requestId
+  const cached = messageCache.get(sessionKey) ?? []
+  if (cached.some(message => message.id === id)) return
+  const runMessage = cached.find(message => message.id === runMessageIds.get(key))
+  const chat = agentChats.value.find(chat => agentSessionKey(chat.id) === sessionKey)
+  const sender = runMessage && 'sender' in runMessage ? runMessage.sender : chat ? agentSender(chat) : { id: 'agent', name: event.vendor, role: 'agent' as const }
+  const permission = event.type === 'permission_request'
+  const message: AgentQuestionMessage = {
+    id, chatId: sessionKey, timestamp: new Date().toISOString(), kind: 'agent-question', sender,
+    summary: event.request.message,
+    interaction: { requestId: id, kind: permission ? 'permission' : 'user_input' },
+    questions: permission ? [{ id: 'permission', question: event.request.toolName, options: [{ id: 'approve', label: '允许本次操作' }, { id: 'deny', label: '拒绝' }], allowText: false }] : event.request.questions ?? []
+  }
+  updateCachedMessages(sessionKey, messages => [...messages, message])
+}
+
 function syncRunMessage(key: string, event: AgentEvent): void {
   switch (event.type) {
     case 'session_started':
@@ -1060,6 +1078,14 @@ function syncRunMessage(key: string, event: AgentEvent): void {
         isError: Boolean(event.isError)
       })
       if (!event.isError) startRunStep(key, 'thinking', '继续思考', 'thinking')
+      return
+    case 'permission_request':
+    case 'user_input_request':
+      showInteraction(key, event)
+      return
+    case 'permission_resolved':
+    case 'user_input_resolved':
+      updateCachedMessages(key.split(':run:')[0], cached => cached.map(message => message.kind === 'agent-question' && message.interaction?.requestId === event.requestId ? { ...message, answered: true, answerText: event.response.decision } : message))
       return
     case 'text':
       return
@@ -1358,6 +1384,8 @@ async function loadAgentMessages(
     if (updatesActiveChat && loadId === activeLoadId && activeSessionKey.value === sessionKey) {
       messages.value = next
     }
+    const pending = await interactionApi.list({ chatId })
+    for (const item of pending) showInteraction(sessionKey, item.event)
   } finally {
     if (updatesActiveChat && loadId === activeLoadId) messagesLoading.value = false
   }
@@ -1387,6 +1415,8 @@ async function loadGroupMessages(
     if (updatesActiveChat && loadId === activeLoadId && activeSessionKey.value === sessionKey) {
       messages.value = next
     }
+    const pending = await interactionApi.list({ groupId })
+    for (const item of pending) showInteraction(sessionKey, item.event)
   } finally {
     if (updatesActiveChat && loadId === activeLoadId) messagesLoading.value = false
   }
@@ -2453,7 +2483,17 @@ async function onSubmitQuestion(payload: {
   message: AgentQuestionMessage
   text: string
   mentions: string[]
+  answers?: Record<string, string>
 }): Promise<void> {
+  if (payload.message.interaction) {
+    if (payload.message.answered || activeArchived.value) return
+    const interaction = payload.message.interaction
+    try {
+      await interactionApi.respond(interaction.requestId, interaction.kind === 'permission' ? { decision: payload.answers?.permission === 'approve' ? 'approve' : 'deny' } : { decision: 'answer', answers: payload.answers })
+      updateCachedMessages(payload.message.chatId, messages => messages.map(message => message.id === payload.message.id ? { ...message, answered: true, answerText: payload.text } : message))
+    } catch (error) { appendSystemMessage(payload.message.chatId, error instanceof Error ? error.message : '答复提交失败') }
+    return
+  }
   if (payload.message.answered || streaming.value || activeArchived.value) return
   // 乐观置灰本地卡片，避免刷新前重复提交。
   const sessionKey = activeSessionKey.value

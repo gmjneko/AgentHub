@@ -33,7 +33,7 @@ const emit = defineEmits<{
   (e: 'reply-option', payload: { message: OptionsMessage; text: string }): void
   (
     e: 'submit-question',
-    payload: { message: AgentQuestionMessage; text: string; mentions: string[] }
+    payload: { message: AgentQuestionMessage; text: string; mentions: string[]; answers?: Record<string, string> }
   ): void
   (e: 'pin-message', message: ChatDisplayMessage): void
   (e: 'copy-message', message: ChatDisplayMessage): void
@@ -226,7 +226,7 @@ watch(scrollSignature, async () => {
         <AgentQuestionMessageView
           v-else-if="msg.kind === 'agent-question'"
           :message="msg"
-          :disabled="interactionDisabled"
+          :disabled="msg.interaction ? false : interactionDisabled"
           @submit="emit('submit-question', $event)"
         />
         <AgentRunMessageView

@@ -7,100 +7,14 @@
 
 import type { CoreLogger } from '../logger.js'
 
-export type AgentVendor = 'claude' | 'codex'
-
-/** 资源用量。两边字段不完全一致，做合并；缺失字段保持 undefined。 */
-export interface AgentUsage {
-  inputTokens?: number
-  outputTokens?: number
-  cachedInputTokens?: number
-  reasoningTokens?: number
-  totalCostUSD?: number
-}
-
-/** JSON Schema passed to SDKs that support structured output. */
+import type { AgentVendor, AgentEvent, AgentCapabilities, AgentPermissionMode, AgentInteractionEvent, AgentInteractionResponse } from '@agenthub/shared'
+export type { AgentVendor, AgentUsage, ToolCallStatus, AgentTodoStatus, AgentTodoItem, AgentEvent, AgentCapabilities, AgentPermissionMode, AgentInteractionEvent, AgentInteractionRequest, AgentInteractionResponse } from '@agenthub/shared'
 export type AgentOutputSchema = Record<string, unknown>
-
-/** Agent 当前会话的工具调用状态 */
-export type ToolCallStatus = 'started' | 'completed' | 'failed'
-
-/** Todo 条目状态。Claude 原生三态，Codex 只有 pending/completed 两态 */
-export type AgentTodoStatus = 'pending' | 'in_progress' | 'completed'
-
-/** 一条 Todo 条目 */
-export interface AgentTodoItem {
-  text: string
-  status: AgentTodoStatus
-}
-
-/**
- * 统一事件。所有事件都带 `vendor` 字段，便于调试时区分来源。
- *
- * 事件语义：
- * - session_started: 会话建立，首次拿到 sessionId
- * - turn_started: 一轮（一次 prompt）开始
- * - progress: 助手对当前动作的过程播报，展示在运行过程里
- * - text: 助手最终输出的自然语言文本
- * - thinking: 推理/思考过程（codex reasoning / claude thinking block）
- * - tool_use: 工具调用（含 shell、编辑文件、MCP 等）
- * - tool_result: 工具返回结果
- * - todo: TODO 列表变化
- * - turn_completed: 一轮结束
- * - error: 非致命错误
- * - done: 整个 send() 调用结束（无论成功失败）。流的最后一条。
- */
-export type AgentEvent =
-  | { type: 'session_started'; vendor: AgentVendor; sessionId: string }
-  | { type: 'turn_started'; vendor: AgentVendor }
-  | { type: 'progress'; vendor: AgentVendor; text: string; itemId?: string }
-  | { type: 'text'; vendor: AgentVendor; text: string; itemId?: string }
-  | { type: 'thinking'; vendor: AgentVendor; text: string; itemId?: string }
-  | {
-      type: 'tool_use'
-      vendor: AgentVendor
-      id: string
-      name: string
-      input: unknown
-      status: ToolCallStatus
-    }
-  | {
-      type: 'tool_result'
-      vendor: AgentVendor
-      toolUseId: string
-      output: unknown
-      isError?: boolean
-    }
-  | { type: 'todo'; vendor: AgentVendor; items: AgentTodoItem[] }
-  | { type: 'plan'; vendor: AgentVendor; plan: string }
-  | {
-      type: 'turn_completed'
-      vendor: AgentVendor
-      finalText?: string
-      structuredOutput?: unknown
-      usage?: AgentUsage
-    }
-  | { type: 'error'; vendor: AgentVendor; message: string; fatal?: boolean }
-  | {
-      type: 'done'
-      vendor: AgentVendor
-      success: boolean
-      finalText?: string
-      structuredOutput?: unknown
-      usage?: AgentUsage
-    }
 
 /**
  * 权限模式。取自 Claude SDK 的 PermissionMode 取值集，作为统一接口。
  * Codex 端只能近似映射（never ≈ bypassPermissions），本期默认 bypass。
  */
-export type AgentPermissionMode =
-  | 'default'
-  | 'acceptEdits'
-  | 'bypassPermissions'
-  | 'plan'
-  | 'dontAsk'
-  | 'auto'
-
 /** 构造一个 Agent 时的通用配置 */
 export interface AgentAdapterConfig {
   /** AgentHub 内部的唯一标识，例如 "claude-bob"。仅做日志/调试用 */
@@ -150,22 +64,12 @@ export interface AgentAdapterConfig {
   logger?: CoreLogger
 }
 
-/**
- * adapter 能力描述符。用于向上层（AgentManager / 前端）声明厂商差异，
- * 避免假装两家能力对齐。创建 Agent 时上层据此校验配置是否被支持。
- */
-export interface AgentCapabilities {
-  supportsSystemPrompt: boolean
-  supportsSkills: boolean
-  supportsMcp: boolean
-  /** 是否支持按外部 sessionId 跨进程恢复（两家当前都支持） */
-  supportsResumeById: boolean
-}
-
 /** 发送消息时的可选项 */
 export interface SendOptions {
   /** 取消信号 */
   signal?: AbortSignal
+  turnId?: string
+  onInteraction?: (event: AgentInteractionEvent, signal: AbortSignal) => Promise<AgentInteractionResponse>
   /** JSON Schema describing the expected structured response for this turn. */
   outputSchema?: AgentOutputSchema
 }

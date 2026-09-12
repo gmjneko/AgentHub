@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
 import { randomUUID } from 'node:crypto'
-import { createAgent, type AgentEvent, type AgentVendor } from '../adapter/index.js'
+import { createAgent, TurnDeadline, type AgentEvent, type AgentVendor } from '../adapter/index.js'
 import { LOCAL_DEFAULT_MODEL, type LocalRunConfig, type MessageReplyRef } from '@agenthub/shared'
 import { Agent } from '../entities/agent.entity.js'
 import { AgentSession } from '../entities/agent-session.entity.js'
@@ -20,6 +20,8 @@ import {
 } from '../messages/agent-message-history.service.js'
 import { AgentArtifactService } from './agent-artifact.service.js'
 import type { BlackboardArtifact, DeployManifest } from '@agenthub/shared'
+
+import { AgentInteractionService } from '../interactions/agent-interaction.service.js'
 
 interface RunningTurn {
     sessionId: string
@@ -52,7 +54,8 @@ export class AgentRuntimeService implements OnModuleInit, OnModuleDestroy {
         private readonly messages: AgentMessageHistoryService,
         private readonly config: ConfigService,
         private readonly localRunner: LocalRunnerGateway,
-        private readonly artifacts: AgentArtifactService
+        private readonly artifacts: AgentArtifactService,
+        private readonly interactions: AgentInteractionService
     ) {
         this.maxLive = this.config.get<number>('AGENT_MAX_LIVE', 30)
         this.maxLiveCodex = this.config.get<number>('AGENT_MAX_LIVE_CODEX', 8)
@@ -255,37 +258,26 @@ export class AgentRuntimeService implements OnModuleInit, OnModuleDestroy {
         let finalTextFromDone: string | null = null
         let fatalErrorMessage: string | null = null
         let terminalDone: Extract<AgentEvent, { type: 'done' }> | null = null
-        let timedOut = false
-        let timeout: NodeJS.Timeout | null = null
         const stepDrafts: StepDraft[] = []
         const toolIndexById = new Map<string, number>()
         // 仅用户单聊推导产物;turn 开始抓基线快照,结束据增量推导(group 内部会话不走这里)。
         const artifactBaseline =
             session.scope === 'user' ? await this.artifacts.snapshot(session) : null
-        const timeoutPromise =
-            this.turnTimeoutMs > 0
-                ? new Promise<never>((_, reject) => {
-                      timeout = setTimeout(() => {
-                          timedOut = true
-                          abort.abort()
-                          reject(new Error(`Agent turn timed out after ${this.turnTimeoutMs}ms`))
-                      }, this.turnTimeoutMs)
-                      timeout.unref?.()
-                  })
-                : null
+        const deadline = new TurnDeadline(this.turnTimeoutMs, abort.signal)
         try {
             const iterator = live.adapter
-                .send(prompt, { signal: abort.signal })
+                .send(prompt, { signal: deadline.signal, turnId,
+                    onInteraction: (event, signal) => deadline.waitForInput(() => this.interactions.request({ userId: session.userId, sessionId: session.id, turnId }, event, signal))
+                })
                 [Symbol.asyncIterator]()
             while (true) {
-                const next = timeoutPromise
-                    ? await Promise.race([iterator.next(), timeoutPromise])
-                    : await iterator.next()
+                const next = await Promise.race([iterator.next(), deadline.expired])
                 if (next.done) break
                 const ev = next.value
                 if (ev.type === 'done') {
                     terminalDone = ev
                     if (ev.finalText) finalTextFromDone = ev.finalText
+                    if (!ev.success) fatalErrorMessage ??= 'Agent turn failed'
                     continue
                 }
                 if (ev.type === 'text') textParts.push(ev.text)
@@ -309,12 +301,12 @@ export class AgentRuntimeService implements OnModuleInit, OnModuleDestroy {
                 })
                 .catch(() => undefined)
         } finally {
-            if (timeout) clearTimeout(timeout)
+            deadline.close()
             live.busy = false
             live.abort = null
             live.lastUsedAt = Date.now()
             this.runningTurns.delete(turnId)
-            if (timedOut) this.registry.delete(session.id)
+            if (fatalErrorMessage || !terminalDone?.success) this.registry.delete(session.id)
             try {
                 await this.persistHandle(session, live)
             } catch (err) {
@@ -361,9 +353,11 @@ export class AgentRuntimeService implements OnModuleInit, OnModuleDestroy {
             const done: Extract<AgentEvent, { type: 'done' }> = {
                 type: 'done',
                 vendor: session.vendor,
+                turnId,
+                ...(terminalDone?.structuredOutput !== undefined ? { structuredOutput: terminalDone.structuredOutput } : {}),
                 success: terminalDone
                     ? terminalDone.success && !fatalErrorMessage
-                    : !fatalErrorMessage,
+                    : false,
                 ...(finalText ? { finalText } : {}),
                 ...(terminalDone?.usage ? { usage: terminalDone.usage } : {})
             }

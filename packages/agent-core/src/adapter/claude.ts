@@ -1,6 +1,13 @@
-import type { McpServerConfig, Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+import type { McpServerConfig, Options, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { EventQueue, normalizeEvents } from './event-stream.js'
+import type { AgentInteractionEvent } from './types.js'
+
+function mapEffort(e: AgentAdapterConfig['reasoningEffort']): Options['effort'] | undefined { return e === 'minimal' ? 'low' : e }
+
+
 import type {
   AgentAdapter,
   AgentAdapterConfig,
@@ -13,50 +20,7 @@ import type {
 } from './types.js'
 import { CLAUDE_CAPABILITIES } from './capabilities.js'
 import { NOOP_LOGGER, type CoreLogger } from '../logger.js'
-
-/** Claude 端默认工具白名单（config.allowedTools 未配置时使用） */
-const DEFAULT_CLAUDE_TOOLS = [
-  'Read',
-  'Write',
-  'Edit',
-  'Glob',
-  'Grep',
-  'Bash',
-  'TodoWrite',
-  'TaskCreate',
-  'TaskUpdate',
-  'TaskList',
-  'TaskGet'
-]
-
-/**
- * 把 Claude SDK 的 effort 字段映射过去。
- * Claude 支持 low/medium/high/xhigh/max；codex 还有 'minimal'。
- */
-function mapEffort(e: AgentAdapterConfig['reasoningEffort']): Options['effort'] | undefined {
-  if (!e) return undefined
-  if (e === 'minimal') return 'low'
-  return e
-}
-
-/** 从 Claude content block 中提取一条可读的 stringified output */
-function stringifyToolResult(content: unknown): unknown {
-  if (typeof content === 'string') return content
-  if (Array.isArray(content)) {
-    // BetaContentBlock[] 形态：[{type:"text", text:"..."}]
-    const parts = content
-      .map((b) => {
-        if (b && typeof b === 'object' && 'text' in b) {
-          return (b as { text: unknown }).text
-        }
-        return b
-      })
-      .filter((x) => x !== undefined)
-    if (parts.every((p) => typeof p === 'string')) return parts.join('\n')
-    return parts
-  }
-  return content
-}
+import { validateMcp } from './mcp.js'
 
 /** 老版 TodoWrite 工具的 input 形状 (整批替换 todos) */
 interface ClaudeTodoInput {
@@ -142,20 +106,33 @@ export class ClaudeAdapter implements AgentAdapter {
   }
 
   async *send(prompt: string, options?: SendOptions): AsyncIterable<AgentEvent> {
-    if (this.busy) {
-      throw new Error(`ClaudeAdapter[${this.id}] is busy — wait for the previous send() to finish`)
-    }
+    if (this.busy) throw new Error(`ClaudeAdapter[${this.id}] is busy`)
     this.busy = true
-
     const abortController = new AbortController()
-    if (options?.signal) {
-      if (options.signal.aborted) abortController.abort()
-      else
-        options.signal.addEventListener('abort', () => abortController.abort(), {
-          once: true
-        })
+    const signal = options?.signal ? AbortSignal.any([options.signal, abortController.signal]) : abortController.signal
+    const turnOptions = { ...options, signal, turnId: options?.turnId ?? randomUUID() }
+    const queue = new EventQueue<AgentEvent>()
+    const producer = (async () => {
+      try { for await (const event of this.run(prompt, turnOptions, abortController, event => queue.push(event))) queue.push(event) }
+      catch (error) {
+        queue.push({ type: 'error', vendor: this.vendor, fatal: true, message: error instanceof Error ? error.message : String(error), code: (error as { code?: string })?.code })
+      } finally { queue.close() }
+    })()
+    try { yield* normalizeEvents(this.vendor, queue, turnOptions) }
+    finally {
+      abortController.abort()
+      queue.close()
+      await producer
+      this.busy = false
+      this.suppressedToolUseIds.clear()
     }
+  }
 
+  private async *run(prompt: string, options: SendOptions, abortController: AbortController, emit: (event: AgentEvent) => void): AsyncIterable<AgentEvent> {
+    const signal = options.signal!
+    signal.throwIfAborted()
+    const onAbort = () => abortController.abort()
+    signal.addEventListener('abort', onAbort, { once: true })
     // 权限模式：未配置时沿用 bypassPermissions（自动化全开）。
     // 仅 bypass 时附带 allowDangerouslySkipPermissions；其它模式留给 phase-2 接 canUseTool。
     const permissionMode = this.config.permissionMode ?? 'bypassPermissions'
@@ -166,8 +143,8 @@ export class ClaudeAdapter implements AgentAdapter {
     const opts: Options = {
       cwd: this.config.workingDirectory,
       ...(this.config.model ? { model: this.config.model } : {}),
-      allowedTools: this.config.allowedTools ?? DEFAULT_CLAUDE_TOOLS,
-      tools: this.config.allowedTools ?? { type: 'preset', preset: 'claude_code' },
+      allowedTools: this.config.allowedTools,
+      tools: this.config.allowedTools?.filter(name => !name.startsWith('mcp')) ?? { type: 'preset', preset: 'claude_code' },
       permissionMode,
       allowDangerouslySkipPermissions: permissionMode === 'bypassPermissions',
       settingSources: ['user', 'project'],
@@ -182,6 +159,45 @@ export class ClaudeAdapter implements AgentAdapter {
         ...(this.config.baseUrl ? { ANTHROPIC_BASE_URL: this.config.baseUrl } : {})
       }
     }
+    opts.canUseTool = async (toolName, input, context) => {
+      const userInput = toolName === 'AskUserQuestion'
+      if (!userInput && permissionMode === 'dontAsk') return { behavior: 'deny', message: 'Interactive permission is disabled' }
+      const rawQuestions = Array.isArray(input.questions) ? input.questions as Array<{ question?: string; header?: string; multiSelect?: boolean; options?: Array<{ label?: string; description?: string }> }> : []
+      const event: AgentInteractionEvent = {
+        type: userInput ? 'user_input_request' : 'permission_request',
+        vendor: this.vendor, turnId: options.turnId,
+        request: {
+          requestId: randomUUID(), toolUseId: context.toolUseID, toolName, input,
+          message: context.title ?? context.decisionReason ?? (userInput ? 'Agent needs your input' : `Allow ${toolName}?`),
+          ...(userInput ? { questions: rawQuestions.map((q, i) => ({ id: `q${i + 1}`, question: q.question ?? '', header: q.header, multiSelect: q.multiSelect, allowText: true, options: (q.options ?? []).map((o, j) => ({ id: `q${i + 1}-o${j + 1}`, label: o.label ?? '', description: o.description })) })) } : {})
+        }
+      }
+      if (!options.onInteraction) {
+        emit({ type: 'error', vendor: this.vendor, fatal: true, code: 'INTERACTION_UNAVAILABLE', message: `No host handler for ${toolName}` })
+        return { behavior: 'deny', message: 'No interaction handler connected', interrupt: true }
+      }
+      // Register the pending request before publishing it, so an immediate response cannot race registration.
+      const responsePromise = options.onInteraction(event, AbortSignal.any([signal, context.signal]))
+      emit(event)
+      const response = await responsePromise
+      emit({ type: userInput ? 'user_input_resolved' : 'permission_resolved', vendor: this.vendor, requestId: event.request.requestId, response })
+      if (response.decision === 'deny' || response.decision === 'cancel') {
+        emit({ type: 'error', vendor: this.vendor, fatal: true, code: 'INTERACTION_DENIED', message: `User declined ${toolName}` })
+        return { behavior: 'deny', message: `User declined ${toolName}`, interrupt: true }
+      }
+      if (userInput) {
+        if (response.decision !== 'answer') throw new Error('Expected answers for AskUserQuestion')
+        const answers: Record<string, string> = {}
+        for (const [i, q] of rawQuestions.entries()) {
+          const answer = response.answers?.[`q${i + 1}`]
+          if (!q.question || !answer?.trim()) throw new Error('Missing answer for AskUserQuestion')
+          answers[q.question] = answer
+        }
+        return { behavior: 'allow', updatedInput: { ...input, answers } }
+      }
+      if (response.decision !== 'approve') throw new Error('Expected permission decision')
+      return { behavior: 'allow', updatedInput: input }
+    }
     const systemPrompt = this.config.systemPrompt?.trim()
     if (systemPrompt) {
       opts.systemPrompt = {
@@ -192,7 +208,7 @@ export class ClaudeAdapter implements AgentAdapter {
     }
     if (this.config.skills) opts.skills = this.config.skills
     if (this.config.mcpServers) {
-      opts.mcpServers = this.config.mcpServers as Record<string, McpServerConfig>
+      opts.mcpServers = validateMcp(this.config.mcpServers, 'claude') as Record<string, McpServerConfig>
     }
     if (options?.outputSchema) {
       opts.outputFormat = {
@@ -208,20 +224,28 @@ export class ClaudeAdapter implements AgentAdapter {
     let structuredOutput: unknown
     let usage: AgentUsage | undefined
     let success = true
-    let yieldedTurnStart = false
+    let pendingText: Extract<AgentEvent, { type: 'text' }> | undefined
 
     try {
       // 触发 turn_started（Claude SDK 没有显式 turn 概念，由我们合成）
       yield { type: 'turn_started', vendor: this.vendor }
-      yieldedTurnStart = true
 
-      for await (const msg of query({ prompt, options: opts }) as AsyncIterable<SDKMessage>) {
+      const input = async function* (): AsyncGenerator<SDKUserMessage> { yield { type: 'user', session_id: '', parent_tool_use_id: null, message: { role: 'user', content: prompt } } }
+      for await (const msg of query({ prompt: input(), options: opts })) {
         this.logger.debug(`[raw] ${JSON.stringify(msg)}`)
         for (const ev of this.translate(msg)) {
           this.logger.debug(`[out] ${ev.type}`)
+          if (ev.type === 'text') {
+            if (pendingText) yield { ...pendingText, type: 'progress' }
+            pendingText = ev
+            continue
+          }
+          if (ev.type === 'tool_use' && pendingText) { yield { ...pendingText, type: 'progress' }; pendingText = undefined }
           if (ev.type === 'error' && ev.fatal) success = false
           if (ev.type === 'turn_completed') {
-            finalText = ev.finalText
+            finalText = ev.finalText ?? pendingText?.text
+            if (finalText) yield { type: 'text', vendor: this.vendor, text: finalText, itemId: pendingText?.itemId }
+            pendingText = undefined
             structuredOutput = ev.structuredOutput
             usage = ev.usage
           }
@@ -237,9 +261,6 @@ export class ClaudeAdapter implements AgentAdapter {
         fatal: true
       }
     } finally {
-      if (!yieldedTurnStart) {
-        // 异常太早，至少补一个 done
-      }
       this.logger.debug(
         `[done] ${JSON.stringify({
           success,
@@ -255,7 +276,7 @@ export class ClaudeAdapter implements AgentAdapter {
         structuredOutput,
         usage
       }
-      this.busy = false
+      signal.removeEventListener('abort', onAbort)
     }
   }
 
@@ -276,19 +297,21 @@ export class ClaudeAdapter implements AgentAdapter {
       case 'assistant': {
         const content = msg.message?.content
         if (!Array.isArray(content)) return
-        for (const block of content) {
+        for (const [blockIndex, block] of content.entries()) {
           const b = block as unknown as { type: string; [k: string]: unknown }
           if (b.type === 'text' && typeof b.text === 'string') {
             yield {
               type: 'text',
               vendor: this.vendor,
-              text: b.text
+              text: b.text,
+              itemId: `${msg.uuid}:${blockIndex}`
             }
           } else if (b.type === 'thinking' && typeof b.thinking === 'string') {
             yield {
               type: 'thinking',
               vendor: this.vendor,
-              text: b.thinking
+              text: b.thinking,
+              itemId: `${msg.uuid}:${blockIndex}`
             }
           } else if (b.type === 'tool_use') {
             const id = String(b.id ?? '')
@@ -370,6 +393,8 @@ export class ClaudeAdapter implements AgentAdapter {
               id,
               name,
               input: b.input,
+              kind: name.startsWith('mcp__') ? 'mcp' : name === 'Bash' ? 'shell' : 'native',
+              ...(name.startsWith('mcp__') ? { mcp: { server: name.split('__')[1], tool: name.split('__').slice(2).join('__') } } : {}),
               // Claude 的 assistant tool_use 块只是"发起"，完成与否要看后续的 tool_result
               status: 'started'
             }
@@ -394,7 +419,7 @@ export class ClaudeAdapter implements AgentAdapter {
               type: 'tool_result',
               vendor: this.vendor,
               toolUseId,
-              output: stringifyToolResult(b.content),
+              output: b.content,
               isError: Boolean(b.is_error)
             }
           }
@@ -427,7 +452,8 @@ export class ClaudeAdapter implements AgentAdapter {
           yield {
             type: 'error',
             vendor: this.vendor,
-            message: `Claude turn ended with subtype=${msg.subtype}`
+            message: `Claude turn ended with subtype=${msg.subtype}: ${'errors' in msg ? msg.errors.join('; ') : ''}`,
+            fatal: true
           }
           yield { type: 'turn_completed', vendor: this.vendor }
         }

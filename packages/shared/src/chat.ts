@@ -154,6 +154,7 @@ export interface OptionsMessage extends BaseMessage {
  * 成员提问卡片（渲染层）：成员挂起任务向用户提问时展示，用户逐题作答后拼接成一句回复自动发送。
  */
 export interface AgentQuestionMessage extends BaseMessage {
+  interaction?: { requestId: string; kind: 'permission' | 'user_input' }
   kind: 'agent-question'
   sender: SenderInfo
   questions: AgentQuestion[]

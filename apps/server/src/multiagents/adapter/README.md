@@ -600,7 +600,7 @@ async function broadcast(prompt: string) {
 | Codex 的 todo 拿不到 in_progress        | 上层只能看到两态                      | SDK 限制；等 Codex SDK 升级或自行从相邻状态推断                                |
 | 权限审批未实现（本期 auto-approve）     | 自动化"全开"，无法对接 UI 审批        | Claude 端接 `canUseTool`（已留 `permissionMode` seam）；Codex SDK 暂无回调 API |
 | Claude 的 AskUserQuestion 卡死          | 反问场景下流会挂起                    | 需切到 streaming input 模式 + 双向回调，重构较大                               |
-| Codex 的 MCP 不支持                     | Claude 形状的 MCP 配置在 Codex 上无效 | `capabilities()` 已声明；Manager 创建时显式拒绝而非静默丢弃                    |
+| Codex MCP 交互审批受限                     | Codex 原生配置支持 stdio/HTTP MCP，但 SDK 没有宿主审批回调 | adapter 显式映射配置；需要交互审批时返回结构化能力错误                    |
 | 无 cost / rate-limit 上报               | Codex SDK 没有 cost 字段              | 等 SDK 升级；或基于 token 数 + 模型价格表自己算                                |
 | 不支持图片输入                          | Codex 的 `local_image` UserInput 未接 | `send()` 改成接受 `string \| UserInput[]`                                      |
 

@@ -220,6 +220,12 @@ export class LocalRunnerGateway implements OnModuleInit, OnModuleDestroy {
         if (conn) this.send(conn, { type: 'run.abort', runId })
     }
 
+    respondInteraction(userId: string, runId: string, requestId: string, response: import('@agenthub/shared').AgentInteractionResponse): void {
+        const conn = this.connections.get(userId)
+        if (!conn?.runs.has(runId)) throw new Error('Local run is no longer active')
+        this.send(conn, { type: 'run.interaction.response', runId, requestId, response })
+    }
+
     /** 发起一次 RPC（checkpoint/diff/commit/dir.ensure），等待对端应答。 */
     async rpc<M extends LocalRunnerRpcMethod>(
         userId: string,

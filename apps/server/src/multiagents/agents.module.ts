@@ -21,6 +21,7 @@ import { AgentSession } from './entities/agent-session.entity.js'
 import { AgentMessage } from './entities/agent-message.entity.js'
 import { AgentMessageStep } from './entities/agent-message-step.entity.js'
 import { GroupChatMember } from './group/entities/group-chat-member.entity.js'
+import { AgentInteractionModule } from './interactions/agent-interaction.module.js'
 
 /**
  * AgentsModule — 用户虚拟员工管理。
@@ -42,6 +43,7 @@ import { GroupChatMember } from './group/entities/group-chat-member.entity.js'
         UserModule,
         UserWorkspaceModule,
         PlatformProviderModule
+        ,AgentInteractionModule
     ],
     controllers: [AgentsController, AgentChatsController],
     providers: [
