@@ -254,4 +254,6 @@ test('group orchestrator, task context, and lightweight member chat include pinn
     assert.equal(memberPrompt.startsWith('# Pinned messages'), true)
     assert.equal(memberPrompt.includes('全局约束：只改前端'), true)
     assert.equal(memberPrompt.includes('说一句建议'), true)
+    assert.equal(memberPrompt.includes('submit_member_chat'), true)
+    assert.equal(memberPrompt.includes('不要使用工具'), false)
 })

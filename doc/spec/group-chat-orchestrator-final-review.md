@@ -48,8 +48,8 @@ No public API changes.
    - blackboard summary;
    - artifact metadata and safe text/html previews;
    - project meta.
-4. The Orchestrator LLM receives that review context and returns structured
-   JSON.
+4. The Orchestrator LLM receives that review context and submits the review
+   via the control MCP tool `submit_final_review`.
 5. If the review says `complete: true`, the final Orchestrator message is the
    LLM-generated summary.
 6. If the review says `complete: false`, the current run performs another

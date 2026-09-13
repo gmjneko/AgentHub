@@ -2,9 +2,9 @@
 import { computed, reactive } from 'vue'
 import type { AgentQuestion, AgentQuestionMessage, AgentQuestionOption } from '../../api'
 import { formatTime } from '../../utils/format'
+import SenderAvatar from './SenderAvatar.vue'
 import BaseButton from '../ui/BaseButton.vue'
 import BaseInput from '../ui/BaseInput.vue'
-import SenderAvatar from './SenderAvatar.vue'
 
 const props = defineProps<{ message: AgentQuestionMessage; disabled?: boolean }>()
 
@@ -79,16 +79,13 @@ function submit(): void {
 </script>
 
 <template>
-  <div class="flex space-x-3">
+  <div class="flex items-start space-x-3">
     <SenderAvatar :sender="message.sender" />
-    <div class="flex flex-col max-w-[80%] w-full">
-      <div class="flex items-center space-x-2 mb-1 ml-1">
-        <span class="text-sm font-semibold text-text-main">{{ message.sender.name }}</span>
-        <span class="text-sm text-text-muted">{{ formatTime(message.timestamp) }}</span>
-      </div>
-      <div
-        class="bg-surface border border-surface-border p-4 rounded-xl rounded-tl-sm text-md w-full max-w-lg shadow-sm"
-      >
+    <div class="min-w-0 flex-1 space-y-2">
+    <div class="text-xs text-text-muted">
+      {{ message.sender.name }} · {{ formatTime(message.timestamp) }}
+    </div>
+    <div class="w-full text-md">
         <p v-if="message.summary" class="text-text-main mb-3 leading-[22px]">
           {{ message.summary }}
         </p>

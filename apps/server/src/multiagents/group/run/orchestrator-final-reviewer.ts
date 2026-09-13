@@ -3,10 +3,12 @@ import { readFile, stat } from 'node:fs/promises'
 import { extname, isAbsolute, relative, resolve, sep } from 'node:path'
 import type { BlackboardArtifact, DeployManifest } from '@agenthub/shared'
 import {
+    applyControlMcpConfig,
     createAgent,
+    withControlMcp,
     type AgentAdapter,
     type AgentAdapterConfig,
-    type AgentOutputSchema
+    type AgentEvent
 } from '../../adapter/index.js'
 import { AgentWorkspaceService } from '../../workspace/agent-workspace.service.js'
 import { PlatformProviderService } from '../../../platform-provider/platform-provider.service.js'
@@ -58,7 +60,7 @@ interface ReviewerRunResult {
     text: string
     success: boolean
     error?: string
-    structuredOutput?: unknown
+    submission?: unknown
     sessionId?: string | null
 }
 
@@ -75,7 +77,7 @@ const FINAL_REVIEW_SYSTEM_PROMPT = `你是 AgentHub 群聊的 Orchestrator，负
 - 对非文本、过大、或读取失败的产物（预览正文为空，仅有元信息或 message），结合产物元信息与成员任务结果综合判断，不要仅因正文不可读就判 complete=false。
 
 # 输出要求
-- 只输出一个 JSON 对象，不要输出代码块标记或任何额外解释。
+- 必须调用 MCP 工具 submit_final_review 提交验收结果，不要只输出 JSON 文本，也不要输出代码块标记或额外解释。
 - summary：给用户看的最终正文。complete=true 时是一段自然、具体、诚实的总结，说明完成了什么以及产物位置；complete=false 时说明当前进度与还差什么。
 - completedItems：始终列出已真正交付的工作（用短句）；即使整体未完成也要如实填写已完成的部分，没有则为空数组。
 - gaps：未满足或不充分的项（用短句）。complete=true 时为空数组。
@@ -129,15 +131,18 @@ export class LlmOrchestratorFinalReviewer implements OrchestratorFinalReviewer {
         if (!result.success) {
             throw new Error(result.error ?? 'Orchestrator final review failed')
         }
-        const parsed =
-            this.parseReviewObject(result.structuredOutput) ?? this.parseReviewText(result.text)
+        const parsed = this.parseReviewObject(result.submission)
         if (!parsed) {
             this.debug.log('group.orchestrator_final_review.parse_failed', {
                 groupId: req.group.id,
                 runId: req.runId,
                 result
             })
-            throw new Error('Orchestrator final review returned invalid output')
+            throw new Error(
+                result.submission === undefined
+                    ? 'Orchestrator final review missing submit_final_review'
+                    : 'Orchestrator final review returned invalid output'
+            )
         }
         parsed.orchestratorSessionId = result.sessionId ?? null
         this.debug.log('group.orchestrator_final_review.parsed', {
@@ -169,10 +174,8 @@ export class LlmOrchestratorFinalReviewer implements OrchestratorFinalReviewer {
             baseUrl: provider.baseUrl,
             reasoningEffort: 'minimal',
             systemPrompt: FINAL_REVIEW_SYSTEM_PROMPT,
-            allowedTools: [],
             permissionMode: 'default'
         }
-        const adapter = this.createReviewerAdapter(req, config)
         const prompt = await this.buildPrompt(req)
         this.debug.log('group.orchestrator_final_review.prompt', {
             groupId: req.group.id,
@@ -180,9 +183,13 @@ export class LlmOrchestratorFinalReviewer implements OrchestratorFinalReviewer {
             resumedSdkSessionId: req.group.orchestratorSessionId ?? null,
             prompt
         })
-        const first = await this.sendReviewRequest(adapter, prompt, this.outputSchema())
-        if (first.success) return first
-        return this.sendReviewRequest(this.createReviewerAdapter(req, config), prompt)
+        return withControlMcp('submit_final_review', undefined, async (control) => {
+            const adapter = this.createReviewerAdapter(
+                req,
+                applyControlMcpConfig(config, req.group.orchestratorVendor, control, 'control-only')
+            )
+            return this.sendReviewRequest(adapter, prompt, control)
+        })
     }
 
     private createReviewerAdapter(
@@ -197,17 +204,18 @@ export class LlmOrchestratorFinalReviewer implements OrchestratorFinalReviewer {
     }
 
     private async sendReviewRequest(
-        adapter: ReturnType<typeof createAgent>,
+        adapter: AgentAdapter,
         prompt: string,
-        outputSchema?: AgentOutputSchema
+        control: { resolve(events: Iterable<AgentEvent>): Promise<{ payload: unknown } | null> }
     ): Promise<ReviewerRunResult> {
         const parts: string[] = []
+        const events: AgentEvent[] = []
         let finalFromDone: string | null = null
-        let structuredOutput: unknown
         let success = true
         let error: string | undefined
 
-        for await (const ev of adapter.send(prompt, outputSchema ? { outputSchema } : undefined)) {
+        for await (const ev of adapter.send(prompt)) {
+            events.push(ev)
             if (ev.type === 'text') parts.push(ev.text)
             else if (ev.type === 'error' && ev.fatal) {
                 success = false
@@ -215,53 +223,18 @@ export class LlmOrchestratorFinalReviewer implements OrchestratorFinalReviewer {
             } else if (ev.type === 'done') {
                 success = ev.success
                 if (ev.finalText) finalFromDone = ev.finalText
-                structuredOutput = ev.structuredOutput
             }
         }
         const textParts = parts.map((part) => part.trim()).filter((part) => part.length > 0)
         const finalText = finalFromDone?.trim()
         if (finalText && !textParts.includes(finalText)) textParts.push(finalText)
+        const submission = await control.resolve(events)
         return {
             text: textParts.join('\n\n').trim(),
             success,
             error,
-            structuredOutput,
+            submission: submission?.payload,
             sessionId: adapter.sessionId
-        }
-    }
-
-    private outputSchema(): AgentOutputSchema {
-        return {
-            type: 'object',
-            properties: {
-                complete: { type: 'boolean' },
-                summary: { type: 'string' },
-                completedItems: { type: 'array', items: { type: 'string' } },
-                gaps: { type: 'array', items: { type: 'string' } },
-                followUpInstruction: { type: ['string', 'null'] },
-                deploy: {
-                    type: ['object', 'null'],
-                    properties: {
-                        mode: { type: 'string', enum: ['static', 'service'] },
-                        entryPath: { type: 'string' },
-                        command: { type: 'string' },
-                        installCommand: { type: 'string' },
-                        port: { type: 'integer' },
-                        note: { type: 'string' }
-                    },
-                    required: ['mode'],
-                    additionalProperties: false
-                }
-            },
-            required: [
-                'complete',
-                'summary',
-                'completedItems',
-                'gaps',
-                'followUpInstruction',
-                'deploy'
-            ],
-            additionalProperties: false
         }
     }
 
@@ -284,7 +257,7 @@ export class LlmOrchestratorFinalReviewer implements OrchestratorFinalReviewer {
             '',
             `产物预览：\n${this.renderArtifacts(artifacts)}`,
             '',
-            '请判断这些产物是否已经满足用户原始需求，并按 JSON schema 输出最终验收结果。'
+            '请判断这些产物是否已经满足用户原始需求，并调用 submit_final_review 提交最终验收结果。'
         ].join('\n')
     }
 
@@ -389,16 +362,6 @@ export class LlmOrchestratorFinalReviewer implements OrchestratorFinalReviewer {
         }
     }
 
-    private parseReviewText(text: string): OrchestratorFinalReviewResult | null {
-        const json = this.extractJson(text)
-        if (!json) return null
-        try {
-            return this.parseReviewObject(JSON.parse(json))
-        } catch {
-            return null
-        }
-    }
-
     private parseReviewObject(obj: unknown): OrchestratorFinalReviewResult | null {
         if (typeof obj !== 'object' || obj === null) return null
         const rec = obj as Record<string, unknown>
@@ -456,15 +419,6 @@ export class LlmOrchestratorFinalReviewer implements OrchestratorFinalReviewer {
             .filter((item): item is string => typeof item === 'string')
             .map((item) => item.trim())
             .filter(Boolean)
-    }
-
-    private extractJson(text: string): string | null {
-        const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/)
-        if (fenced) return fenced[1].trim()
-        const start = text.indexOf('{')
-        const end = text.lastIndexOf('}')
-        if (start >= 0 && end > start) return text.slice(start, end + 1)
-        return null
     }
 
     private assertAllowedArtifactPath(path: string): void {

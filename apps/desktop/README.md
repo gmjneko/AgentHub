@@ -41,7 +41,7 @@ apps/desktop/
         ├── index.html                   # 渲染层宿主页，挂载 Vue 应用
         └── src/
             ├── main.ts                  # Vue 启动：引入 main.css，挂载 App.vue 到 #app
-            ├── App.vue                  # 根壳：鉴权门 + GlobalSidebar 在 chat/groups/agents/settings 间导航
+            ├── App.vue                  # 根壳：鉴权门 + WorkspaceSidebar，在 workspace/agents/settings 间切换主区
             ├── env.d.ts                 # Vite 客户端类型引用
             ├── api/                     # 后端 HTTP/SSE 客户端
             │   ├── http.ts              # 核心请求助手：经 proxy 解信封、抛 ApiError、处理 401
@@ -53,7 +53,8 @@ apps/desktop/
             │   ├── mock.ts              # 尚未落地的 chat 模块的内存 mock AgentHubApi
             │   └── index.ts             # API barrel：导出各客户端 + 当前 mock + 重导出 shared 类型
             ├── stores/
-            │   └── auth.ts              # 响应式鉴权 store：token/user、localStorage 持久化、login/register/logout
+            │   ├── auth.ts              # 响应式鉴权 store：token/user、localStorage 持久化、login/register/logout
+            │   └── workspace.ts         # 工作台导航、侧栏会话镜像、新建信号、会话操作回调
             ├── types/
             │   ├── chatDisplay.ts       # UI 消息/运行步骤展示类型 + 类型守卫（AgentRun/Deploy）
             │   └── mentions.ts          # @-mention 选择器的 MentionTarget 接口
@@ -68,21 +69,23 @@ apps/desktop/
             │   └── vendor.ts            # vendor/model 标签助手（Claude Code vs Codex、本地默认）
             ├── views/
             │   ├── AuthView.vue         # 登录/注册表单（前端校验）
-            │   ├── ChatView.vue         # 主单聊：消息列表、流式运行、黑板、diff inspector
-            │   ├── GroupChatView.vue    # 群聊工作台：群列表、详情面板、黑板、产物预览
+            │   ├── ChatView.vue         # 工作台主区：文档式 transcript、流式运行、右侧 inspector
+            │   ├── GroupChatView.vue    # 群聊资料页（已退出主导航，保留文件）
             │   ├── AgentsView.vue       # Agent 管理：列表、创建/编辑/删除、右键菜单
             │   └── SettingsView.vue     # 设置：Provider 列表/详情 + 创建/编辑/删除
             ├── components/              # 通用业务组件
-            │   ├── GlobalSidebar.vue        # 左侧导航栏 + UserMenu
-            │   ├── ChatList.vue             # 会话列表（置顶/归档、群头像、右键菜单）
-            │   ├── ChatHeader.vue           # 聊天头部栏（标题/操作）
-            │   ├── MessageList.vue          # 消息流渲染，分发到各类型消息组件
-            │   ├── MessageInput.vue         # 输入框：文本、@-mention、文件/图片附件、引用栏
+            │   ├── WorkspaceSidebar.vue     # 宽侧栏：新建、搜索、群聊/单聊分组、Agents/设置
+            │   ├── GlobalSidebar.vue        # 旧 68px 图标栏（已退出壳层）
+            │   ├── ChatList.vue             # 旧合并会话列表（已由 WorkspaceSidebar 替代）
+            │   ├── InspectorSection.vue     # 右侧手风琴分段
+            │   ├── ChatHeader.vue           # 细顶栏（标题/状态）
+            │   ├── MessageList.vue          # 限宽阅读栏消息流
+            │   ├── MessageInput.vue         # 底部输入条：文本、@-mention、附件、引用栏
             │   ├── PinnedBar.vue            # 置顶消息条（取消置顶/跳转）
-            │   ├── RightInspector.vue       # 右侧检查器：Agent 网络节点、运行阶段、todos
+            │   ├── RightInspector.vue       # 单聊右侧手风琴：环境（含 diff）/ 任务 / 产物
             │   ├── BlackboardSidebar.vue    # 黑板任务/产物侧栏（状态色）
-            │   ├── GroupDetailPanel.vue     # 群详情：成员、黑板任务/产物概览
-            │   ├── WorkspaceDiffPanel.vue   # 工作区 git diff 概览（刷新/提交）
+            │   ├── GroupDetailPanel.vue     # 群详情；inspector 模式为环境/任务/产物手风琴
+            │   ├── WorkspaceDiffPanel.vue   # 工作区 git diff 概览（嵌在右侧环境信息）
             │   ├── DeploymentDrawer.vue     # 部署日志/事件抽屉（SSE）
             │   ├── ArtifactPreviewBody.vue  # 产物预览内容（HTML iframe/图片/文本/过大）
             │   ├── ArtifactPreviewDrawer.vue# 拉取并展示产物预览的侧抽屉（群/单聊）

@@ -38,7 +38,7 @@
    - 当前黑板快照与 blackboardSummary
    - 成员状态、用户输入、显式提及
    - 发送给 Orchestrator 的 prompt
-   - Orchestrator 原始输出/结构化输出
+   - Orchestrator 原始输出 / MCP 提交载荷
    - 最终任务图与 agent 分配
 4. `ContextAssembler` 记录：
    - 读取到的黑板信息

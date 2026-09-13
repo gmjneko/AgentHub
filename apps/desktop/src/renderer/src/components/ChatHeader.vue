@@ -1,35 +1,28 @@
 <script setup lang="ts">
 import type { ChatDetail } from '../api'
-import BaseButton from './ui/BaseButton.vue'
 
 defineProps<{ detail: ChatDetail | null }>()
 </script>
 
 <template>
   <header
-    class="border-b border-surface-border flex items-center px-5 justify-between flex-shrink-0 bg-surface z-10 sticky top-0 h-16"
+    class="flex h-12 flex-shrink-0 items-center justify-between border-b border-surface-border/80 bg-background/80 px-6 backdrop-blur-[2px]"
   >
-    <div class="flex flex-col">
-      <div class="flex items-center space-x-2">
-        <h1 class="font-semibold text-text-main text-lg">{{ detail?.title ?? '—' }}</h1>
+    <div class="min-w-0">
+      <div class="flex min-w-0 items-center gap-2">
+        <h1 class="truncate text-md font-semibold tracking-tight text-text-main">
+          {{ detail?.title ?? '工作台' }}
+        </h1>
         <span
           v-if="detail?.status"
-          class="bg-green-100 text-green-700 py-0.5 rounded-full font-medium text-xs px-2"
+          class="flex-shrink-0 rounded-full bg-success-soft px-2 py-0.5 text-xs font-medium text-success"
         >
           {{ detail.status }}
         </span>
       </div>
-      <span v-if="detail" class="text-text-muted mt-0.5 text-sm">
-        {{ detail.agentCount }} Agents
-      </span>
     </div>
-    <div class="flex items-center space-x-3 text-text-muted">
-      <BaseButton variant="ghost" icon>
-        <span class="material-symbols-outlined text-3xl">search</span>
-      </BaseButton>
-      <BaseButton variant="ghost" icon>
-        <span class="material-symbols-outlined text-3xl">more_horiz</span>
-      </BaseButton>
+    <div v-if="detail" class="flex-shrink-0 text-xs text-text-muted">
+      {{ detail.agentCount }} {{ detail.agentCount === 1 ? 'Agent' : 'Agents' }}
     </div>
   </header>
 </template>

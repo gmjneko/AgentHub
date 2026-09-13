@@ -12,7 +12,12 @@ import type {
     BlackboardUpdate,
     BlackboardArtifact
 } from '@agenthub/shared'
-import { createAgent, type AgentEvent } from '../../adapter/index.js'
+import {
+    applyControlMcpConfig,
+    createAgent,
+    withControlMcp,
+    type AgentEvent
+} from '../../adapter/index.js'
 import { Agent } from '../../entities/agent.entity.js'
 import { AgentSession } from '../../entities/agent-session.entity.js'
 import { agentToConfig } from '../../mappers/agent.mapper.js'
@@ -97,17 +102,15 @@ export interface DispatchResult {
 const REPORT_INSTRUCTION = `
 
 # 收尾报告（必须）
-完成实际工作后（用你的文件工具 read→plan→patch→test），在输出最后给出一个 JSON 报告，放在 \`\`\`report 代码块里：
-\`\`\`report
+完成实际工作后（用你的文件工具 read→plan→patch→test），必须调用 MCP 工具 submit_member_report 提交报告，不要再写 \`\`\`report 代码块。
+参数示例：
 {"summary":"面向用户的交付摘要：详细说明完成了什么、产物/入口在哪里、关键能力与验证结果；如有偏差或注意事项也要写清楚。不要在 summary 里写 JSON/report/code fence。","affected":{"artifacts":["新增或修改的产出物工作区相对路径；无产出物才留空"],"contracts":[],"decisions":[]},"decisions":[],"contracts":[],"memory_candidate":null}
-\`\`\`
 summary 会作为群聊里该成员最终消息的正文展示给用户，所以你要把最终输出的信息再从这里写一遍，然后在最后加上总结，但不要粘贴完整文件、日志或内部 report。
-凡是本轮创建或修改了可交付文件（代码、页面、文档、设计稿、测试报告等），必须把它们作为产出物记录到 report.affected.artifacts，使用工作区相对路径；这些路径会被服务端写入黑板产出物，侧边栏“产出物”只依赖黑板记录展示。
+凡是本轮创建或修改了可交付文件（代码、页面、文档、设计稿、测试报告等），必须把它们作为产出物记录到 affected.artifacts，使用工作区相对路径；这些路径会被服务端写入黑板产出物，侧边栏“产出物”只依赖黑板记录展示。
 只有确有内容才填 decisions / contracts / memory_candidate。不要修改他人 owner 的 approvalRequired 契约。
 
 # 需要向用户确认信息时（重要）
-**不要使用 AskUserQuestion 工具（群聊后台运行里它拿不到用户输入、必失败）**。改为在 report 里设 awaiting_user_input:true，并尽量输出结构化的 questions 数组（会渲染成可点选的提问卡片，用户作答后自动拼成回复发回给你）：
-\`\`\`report
+**不要使用 AskUserQuestion 工具（群聊后台运行里它拿不到用户输入、必失败）**。改为在 submit_member_report 里设 awaiting_user_input:true，并尽量给出结构化的 questions 数组（会渲染成可点选的提问卡片，用户作答后自动拼成回复发回给你）：
 {
   "summary":"等待用户确认时区计算器需求",
   "awaiting_user_input":true,
@@ -121,7 +124,6 @@ summary 会作为群聊里该成员最终消息的正文展示给用户，所以
      "options":[{"label":"需要"},{"label":"不需要"}]}
   ]
 }
-\`\`\`
 规则：每题 question 必填；options 每项至少含 label（description 可选）；multiSelect/allowText 默认 false；
 若确实无法结构化，至少给出 question 一句话摘要（将回退为纯文本提问）。question 仅作一句话摘要，不要把所有细节塞进它。
 设置后本任务会被挂起、依赖它的下游任务不会启动；用户回复后，你会在同一会话里收到答复并继续完成任务（无需重述上下文）。`
@@ -170,7 +172,7 @@ export class DispatchService {
             constraints: [
                 '仅 owner 可改共享契约；非 owner 触碰 approvalRequired 契约将被拒绝并上报'
             ],
-            outputSpec: '交付改动 + 简短说明，并按要求输出 report'
+            outputSpec: '交付改动 + 简短说明，并调用 submit_member_report 提交报告'
         }
         const assembled = await this.assembler.assemble({
             groupId: group.id,
@@ -215,6 +217,7 @@ export class DispatchService {
         let finalText = ''
         let fatal: string | null = null
         let agentMessageId: string | null = null
+        let reportSubmission: unknown
         let mirroredAttachmentCount = 0
         let attachmentMirrorsCleaned = false
         let attachmentMirrorCleanupError: string | null = null
@@ -288,13 +291,15 @@ export class DispatchService {
                 finalText = result.finalText
                 fatal = result.fatal
                 agentMessageId = result.agentMessageId
+                reportSubmission = result.reportSubmission
             } catch (err) {
                 fatal = this.errMsg(err)
             }
         }
 
-        const report = this.parseReport(finalText)
-        const summary = report.summary || finalText.slice(0, 200) || '(无输出)'
+        const report = this.parseReport(reportSubmission)
+        if (!fatal && !report) fatal = 'Member did not call submit_member_report'
+        const summary = report?.summary || (fatal ? `失败：${fatal}` : '(无输出)')
         this.debug.log('group.dispatch.agent_output', {
             groupId: group.id,
             runId,
@@ -308,7 +313,7 @@ export class DispatchService {
 
         // 3.5 成员主动挂起：把问题抛给用户，任务等待答复。跳过完成态收口（writeback/合并/applyReport），
         //     只把问题发到群里并写热缓冲；返回 suspended，由 executor 计 waiting_input（不放行/不阻塞下游）。
-        if (!fatal && report.awaiting_user_input === true) {
+        if (!fatal && report && report.awaiting_user_input === true) {
             if (!(await cleanupAttachmentMirrors())) {
                 fatal = `附件镜像清理失败：${attachmentMirrorCleanupError ?? 'unknown error'}`
             } else {
@@ -447,7 +452,7 @@ export class DispatchService {
         }
 
         // 5. 处理成员报告（仅成功时）
-        if (!fatal) {
+        if (!fatal && report) {
             await this.applyReport(params, report, updates, escalations)
         }
 
@@ -511,10 +516,36 @@ export class DispatchService {
         session: AgentSession,
         agent: Agent,
         prompt: string
-    ): Promise<{ finalText: string; fatal: string | null; agentMessageId: string | null }> {
+    ): Promise<{
+        finalText: string
+        fatal: string | null
+        agentMessageId: string | null
+        reportSubmission?: unknown
+    }> {
         const provider = await this.resolveProvider(params.userId, agent)
         const config = agentToConfig(agent, session, provider.apiKey, provider.baseUrl, session.id)
-        const adapter = createAgent(agent.vendor, config)
+        return withControlMcp('submit_member_report', config.mcpServers, async (control) => {
+            const adapter = createAgent(
+                agent.vendor,
+                applyControlMcpConfig(config, agent.vendor, control, 'merge')
+            )
+            return this.consumeMemberTurn(params, session, agent, prompt, adapter, control)
+        })
+    }
+
+    private async consumeMemberTurn(
+        params: DispatchParams,
+        session: AgentSession,
+        agent: Agent,
+        prompt: string,
+        adapter: ReturnType<typeof createAgent>,
+        control: { resolve(events: Iterable<AgentEvent>): Promise<{ payload: unknown } | null> }
+    ): Promise<{
+        finalText: string
+        fatal: string | null
+        agentMessageId: string | null
+        reportSubmission?: unknown
+    }> {
         // 情况 A 续接热会话；B/C 全重开（不 resume）
         if (params.continuity.case === 'A' && session.sdkSessionId) {
             adapter.resumeWith(session.sdkSessionId)
@@ -535,6 +566,7 @@ export class DispatchService {
         const stepDrafts: StepDraft[] = []
         const toolIndex = new Map<string, number>()
         const textParts: string[] = []
+        const events: AgentEvent[] = []
         let finalFromDone: string | null = null
         let fatal: string | null = null
         let sawDone = false
@@ -558,6 +590,7 @@ export class DispatchService {
                 const next = await Promise.race([iterator.next(), deadline.expired])
                 if (next.done) break
                 const ev = next.value
+                events.push(ev)
                 if (ev.type === 'done') {
                     sawDone = true;
                     if (!ev.success) fatal ??= 'Agent turn failed'
@@ -584,6 +617,7 @@ export class DispatchService {
             if (!sawDone) fatal ??= 'Agent stream ended without done'
         }
 
+        const submission = await control.resolve(events)
         const finalText = (finalFromDone ?? textParts.join('')).trim()
         let agentMessageId: string | null = null
         this.debug.log('group.dispatch.turn_finished', {
@@ -619,7 +653,7 @@ export class DispatchService {
             this.logger.error(`Failed to persist member turn: ${this.errMsg(err)}`)
         }
 
-        return { finalText, fatal, agentMessageId }
+        return { finalText, fatal, agentMessageId, reportSubmission: submission?.payload }
     }
 
     private async publishMemberEvent(params: DispatchParams, ev: AgentEvent): Promise<void> {
@@ -855,23 +889,10 @@ export class DispatchService {
         }
     }
 
-    private parseReport(text: string): MemberReport {
-        const block = text.match(/```report\s*([\s\S]*?)```/)
-        const raw = block ? block[1] : null
-        if (raw) {
-            try {
-                const obj = JSON.parse(raw.trim()) as MemberReport
-                if (obj && typeof obj.summary === 'string') return obj
-            } catch {
-                // fall through
-            }
-        }
-        return {
-            summary: text
-                .replace(/```report[\s\S]*?```/g, '')
-                .trim()
-                .slice(0, 200)
-        }
+    private parseReport(submission?: unknown): MemberReport | null {
+        if (!submission || typeof submission !== 'object') return null
+        const obj = submission as MemberReport
+        return typeof obj.summary === 'string' ? obj : null
     }
 
     private artifactType(path: string): BlackboardArtifactType {

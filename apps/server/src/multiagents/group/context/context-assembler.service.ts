@@ -227,7 +227,7 @@ export class ContextAssembler {
     private renderArtifactWritebackPolicy(): string {
         return [
             '# Artifact writeback policy',
-            '- 如果本轮创建或修改了任何可交付文件（代码、页面、文档、设计稿、测试报告等），必须在最终 report.affected.artifacts 中列出所有产出物的工作区相对路径。',
+            '- 如果本轮创建或修改了任何可交付文件（代码、页面、文档、设计稿、测试报告等），必须在 submit_member_report 的 affected.artifacts 中列出所有产出物的工作区相对路径。',
             '- 这些路径会被服务端写入黑板产出物记录；侧边栏“产出物”只展示黑板中的产出物。没有产出物时才留空。'
         ].join('\n')
     }

@@ -1227,7 +1227,7 @@ export class GroupRunExecutor implements OnModuleInit {
                     `成员 ${turn.agentId} 不在本群。`
                 )
                 success = false
-                break
+                continue
             }
             this.debug.log('group.run.member_turn.dispatch', {
                 groupId: group.id,
@@ -1252,7 +1252,11 @@ export class GroupRunExecutor implements OnModuleInit {
             })
             if (!result.success) {
                 success = false
-                break
+                await this.groupMessages.appendSystem(
+                    group.id,
+                    userId,
+                    `${pair.agent.name}：${result.summary}`
+                )
             }
         }
         this.debug.log('group.run.member_turns.finished', {

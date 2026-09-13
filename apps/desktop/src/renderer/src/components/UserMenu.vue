@@ -140,7 +140,7 @@ async function onLogout(): Promise<void> {
 </script>
 
 <template>
-  <div ref="rootRef" class="relative flex items-center justify-center w-full">
+  <div ref="rootRef" class="relative flex w-10 flex-shrink-0 items-center justify-center">
     <button
       type="button"
       class="w-10 h-10 rounded-full overflow-hidden flex items-center justify-center text-white font-semibold text-md focus:outline-none focus:ring-2 focus:ring-primary/40 transition-shadow"
@@ -162,7 +162,7 @@ async function onLogout(): Promise<void> {
     <Transition name="pop">
       <div
         v-if="menuOpen"
-        class="absolute left-[52px] top-0 z-50 w-44 bg-surface border border-gray-150 rounded-md shadow-lg py-1.5"
+        class="absolute left-0 top-[calc(100%+6px)] z-50 w-44 rounded-md border border-gray-150 bg-surface py-1.5 shadow-lg"
       >
         <div class="px-3 py-1.5 border-b border-surface-border mb-1">
           <p class="text-md font-medium text-text-main truncate">

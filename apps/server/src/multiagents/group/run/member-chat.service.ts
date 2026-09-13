@@ -5,15 +5,16 @@ import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
 import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
-import type { AgentEvent, AgentOutputSchema } from '../../adapter/index.js'
-import { createAgent } from '../../adapter/index.js'
+import {
+    applyControlMcpConfig,
+    createAgent,
+    withControlMcp,
+    type AgentEvent
+} from '../../adapter/index.js'
 import { Agent } from '../../entities/agent.entity.js'
 import { AgentSession } from '../../entities/agent-session.entity.js'
 import { agentToConfig } from '../../mappers/agent.mapper.js'
-import {
-    AgentMessageHistoryService,
-    type StepDraft
-} from '../../messages/agent-message-history.service.js'
+import { AgentMessageHistoryService } from '../../messages/agent-message-history.service.js'
 import { AgentWorkspaceService } from '../../workspace/agent-workspace.service.js'
 import { PlatformProviderService } from '../../../platform-provider/platform-provider.service.js'
 import { BusinessException } from '../../../common/index.js'
@@ -39,46 +40,12 @@ export interface MemberChatResult {
     summary: string
 }
 
-const LIGHTWEIGHT_CHAT_SCHEMA: AgentOutputSchema = {
-    type: 'object',
-    properties: {
-        text: { type: 'string' }
-    },
-    required: ['text'],
-    additionalProperties: false
-}
-
 const LIGHTWEIGHT_CHAT_TIMEOUT_MS = 2 * 60 * 1000
-
-export function normalizeMemberChatStreamEvent(ev: AgentEvent): AgentEvent {
-    if (ev.type === 'text') {
-        return { ...ev, text: displayTextFrom(ev.text) ?? ev.text }
-    }
-    if (ev.type === 'turn_completed' || ev.type === 'done') {
-        const finalText = displayTextFrom(ev.finalText, ev.structuredOutput)
-        return finalText ? { ...ev, finalText } : ev
-    }
-    return ev
-}
-
-function displayTextFrom(rawText?: string, structuredOutput?: unknown): string | null {
-    return parseStructuredText(structuredOutput) ?? parseJsonTextField(rawText) ?? rawText ?? null
-}
 
 function parseStructuredText(raw: unknown): string | null {
     if (typeof raw !== 'object' || raw === null) return null
     const text = (raw as { text?: unknown }).text
     return typeof text === 'string' && text.trim() ? text.trim() : null
-}
-
-function parseJsonTextField(raw: string | null | undefined): string | null {
-    if (!raw) return null
-    try {
-        const parsed = JSON.parse(raw) as unknown
-        return parseStructuredText(parsed)
-    } catch {
-        return null
-    }
 }
 
 /**
@@ -171,9 +138,9 @@ export class MemberChatService {
         return [
             pinnedContext,
             '这是群聊中的轻量回复，不是任务交付。',
-            '非必要情况下不要使用工具、不要读取或修改文件、不要创建计划或待办。',
-            '但如果需要读取文件确认细节/信息等场景，请忽略以上限制，可以使用各种工具获取你所需要的信息。',
-            '只用你自己的角色身份，直接给出一条符合用户提问/编排器（Orchestrator）指令的回复。',
+            '用户看到的内容只能通过 MCP 工具 submit_member_chat 提交，参数 {"text":"你的回复正文"}。不要只把回复写在普通文本里。',
+            '不要创建计划或待办。除非需要核对文件细节，否则不要读写文件。',
+            '只用你自己的角色身份回复。',
             `用户/编排器的指令：${instruction}`
         ]
             .filter(Boolean)
@@ -188,8 +155,23 @@ export class MemberChatService {
     ): Promise<{ finalText: string; fatal: string | null; agentMessageId: string | null }> {
         const provider = await this.resolveProvider(params.userId, agent)
         const config = agentToConfig(agent, session, provider.apiKey, provider.baseUrl, session.id)
-        const adapter = createAgent(agent.vendor, config)
+        return withControlMcp('submit_member_chat', config.mcpServers, async (control) => {
+            const adapter = createAgent(
+                agent.vendor,
+                applyControlMcpConfig(config, agent.vendor, control, 'merge')
+            )
+            return this.consumeMemberChatTurn(params, session, agent, prompt, adapter, control)
+        })
+    }
 
+    private async consumeMemberChatTurn(
+        params: MemberChatParams,
+        session: AgentSession,
+        agent: Agent,
+        prompt: string,
+        adapter: ReturnType<typeof createAgent>,
+        control: { resolve(events: Iterable<AgentEvent>): Promise<{ payload: unknown } | null> }
+    ): Promise<{ finalText: string; fatal: string | null; agentMessageId: string | null }> {
         this.debug.log('group.member_chat.turn_started', {
             groupId: params.group.id,
             runId: params.runId,
@@ -200,11 +182,7 @@ export class MemberChatService {
             prompt
         })
 
-        const stepDrafts: StepDraft[] = []
-        const toolIndex = new Map<string, number>()
-        const textParts: string[] = []
-        let finalFromDone: string | null = null
-        let structuredText: string | null = null
+        const events: AgentEvent[] = []
         let fatal: string | null = null
         let sawDone = false
 
@@ -217,43 +195,27 @@ export class MemberChatService {
         await this.messages.saveMessage(params.userId, agent.id, session.id, 'user', prompt)
         try {
             const iterator = adapter
-                .send(prompt, {
-                    signal: deadline.signal, turnId, onInteraction,
-                    outputSchema: LIGHTWEIGHT_CHAT_SCHEMA
-                })
+                .send(prompt, { signal: deadline.signal, turnId, onInteraction })
                 [Symbol.asyncIterator]()
             while (true) {
                 const next = await Promise.race([iterator.next(), deadline.expired])
                 if (next.done) break
                 const ev = next.value
-                const normalized = normalizeMemberChatStreamEvent(ev)
+                events.push(ev)
                 if (ev.type === 'done') {
-                    sawDone = true;
+                    sawDone = true
                     if (!ev.success) fatal ??= 'Agent turn failed'
-                    const displayText = displayTextFrom(ev.finalText, ev.structuredOutput)
-                    if (displayText) finalFromDone = displayText
-                    if (!ev.success) fatal ??= 'Agent turn failed'
-                    const parsed = parseStructuredText(ev.structuredOutput)
-                    if (parsed) structuredText = parsed
-                    await this.publishMemberEvent(params, normalized)
+                    await this.publishMemberEvent(params, ev)
                     continue
                 }
-                if (ev.type === 'turn_completed') {
-                    const displayText = displayTextFrom(ev.finalText, ev.structuredOutput)
-                    if (displayText) finalFromDone = displayText
-                    const parsed = parseStructuredText(ev.structuredOutput)
-                    if (parsed) structuredText = parsed
-                }
-                if (normalized.type === 'text') textParts.push(normalized.text)
-                else if (ev.type === 'error' && ev.fatal) fatal = ev.message
-                else this.messages.collectStep(ev, stepDrafts, toolIndex)
+                if (ev.type === 'error' && ev.fatal) fatal = ev.message
                 this.debug.log('group.member_chat.turn_event', {
                     groupId: params.group.id,
                     runId: params.runId,
                     agentId: agent.id,
                     event: ev
                 })
-                await this.publishMemberEvent(params, normalized)
+                await this.publishMemberEvent(params, ev)
             }
         } catch (err) {
             fatal ??= this.errMsg(err)
@@ -262,20 +224,28 @@ export class MemberChatService {
             if (!sawDone) fatal ??= 'Agent stream ended without done'
         }
 
-        const rawFinalText = finalFromDone ?? textParts.join('')
-        const finalText = (
-            structuredText ??
-            parseJsonTextField(rawFinalText) ??
-            rawFinalText
-        ).trim()
+        const submission = await control.resolve(events)
+        const finalText = parseStructuredText(submission?.payload) ?? ''
+        if (!fatal && !finalText) fatal = 'Member did not call submit_member_chat'
+        if (finalText) {
+            await this.publishMemberEvent(params, {
+                type: 'tool_use',
+                vendor: agent.vendor,
+                id: 'member-chat-submission',
+                name: 'submit_member_chat',
+                input: { text: finalText },
+                status: 'completed',
+                kind: 'mcp',
+                mcp: { server: 'agenthub_control', tool: 'submit_member_chat' }
+            })
+        }
         let agentMessageId: string | null = null
         this.debug.log('group.member_chat.turn_finished', {
             groupId: params.group.id,
             runId: params.runId,
             agentId: agent.id,
             fatal,
-            finalText,
-            stepCount: stepDrafts.length
+            finalText
         })
 
         try {
@@ -287,10 +257,7 @@ export class MemberChatService {
                     'agent',
                     finalText
                 )
-                if (msg) {
-                    agentMessageId = msg.id
-                    await this.messages.saveSteps(msg.id, session.id, stepDrafts)
-                }
+                if (msg) agentMessageId = msg.id
             }
             session.sdkSessionId = adapter.sessionId ?? session.sdkSessionId
             session.status = 'active'

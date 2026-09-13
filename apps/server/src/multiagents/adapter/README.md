@@ -210,7 +210,7 @@ export interface SendOptions {
 3. **并发互斥**：在前一次 `send()` 的流没消费完之前调用第二次 `send()` 必须抛同步错误。这是为了避免上下文交错。如果上层确实需要并发，应该 spawn 两个 Adapter 实例。
 4. **`session_started` 唯一性**：在一个 Adapter 实例的生命周期内只会发一次。
 5. **`AbortSignal` 支持**：传入的 signal 触发时，流应当尽快终止并发一条 `done`。
-6. **结构化输出**：传入 `outputSchema` 时，Adapter 必须使用底层 SDK 的 schema 输出能力；可用时在 `done.structuredOutput` 返回解析后的对象。
+6. **结构化输出**：传入 `outputSchema` 时，Adapter 必须使用底层 SDK 的 schema 输出能力；可用时在 `done.structuredOutput` 返回解析后的对象。群聊计划/验收/成员回复/收尾报告已改为 control MCP 工具提交，不再走 `outputSchema`；该能力仍保留给其它调用方。
 
 ---
 

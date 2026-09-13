@@ -27,7 +27,7 @@
 ### 2.1 桌面端 `apps/desktop`（Electron + Vue 3，主交付端）
 
 - **三进程架构**：`main`（IPC + `api-proxy` 转发 REST/SSE/上传绕开 CORS + 本地 runner + `agent-preview://` 协议）、`preload`（contextBridge 暴露 `window.api`）、`renderer`（Vue 3，仅经 `window.api` 访问 Electron）。
-- **核心视图**：AuthView（登录/注册）、ChatView（单聊）、GroupChatView（群聊工作台/资料页）、AgentsView（Agent 管理）、SettingsView（Provider 管理）。
+- **核心视图**：AuthView（登录/注册）、ChatView（Agent 工作台：文档式 transcript + 群聊/单聊侧栏）、AgentsView（Agent 管理）、SettingsView（Provider 管理）。GroupChatView 已退出主导航。
 - **业务组件**：统一会话列表（置顶/归档/群头像/右键菜单）、消息流（text/agent-run/agent-question/options/task-list/deploy/附件/系统卡片）、输入框（@-mention/文件图片附件/引用）、置顶条、右侧检查器、黑板侧栏、群详情面板、工作区 Diff 面板、产物预览抽屉/全屏编辑层、服务端目录选择器、各创建弹窗。
 - **设计系统**：自建 Tailwind token + `components/ui/` Base 组件（BaseButton/Input/Select/Textarea/Skeleton）。
 - **本地运行模式**：可选 JWT WebSocket runner 拉起本机 Claude Code/Codex CLI。
@@ -222,7 +222,7 @@ cd apps/android
 - 工作区 diff 汇总与提交推进 checkpoint（`WorkspaceDiffService` 2 项）。
 - 消息 Pin 渲染与单/群上下文注入、再生成 prompt 解析（`AgentMessageHistoryService`/`GroupMessageService`）。
 - 群附件落工作区/清理/预览鉴权（`GroupAttachmentService` 5 项）。
-- Orchestrator 结构化输出优先、隐藏交接审查无状态 ChatClient（`LlmOrchestratorPlanner`/`HandoffReviewer`）。
+- Orchestrator 经 control MCP 提交计划/验收、隐藏交接审查无状态 ChatClient（`LlmOrchestratorPlanner`/`HandoffReviewer`）。
 - 远端 runner 适配与异步队列、非 ASCII 产物路径保留。
 
 **Android**：`./gradlew test`（含 `ReducersTest`：会话排序/运行归约/表单校验）由验收方在本地 Gradle 环境执行（未纳入 pnpm workspace 脚本）。

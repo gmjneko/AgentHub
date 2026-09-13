@@ -1,5 +1,6 @@
 export * from './logger.js'
 export * from './adapter/index.js'
+export * from './control-mcp/index.js'
 export { WorkspaceGit } from './workspace/workspace-git.js'
 export {
   buildArtifactPreview,

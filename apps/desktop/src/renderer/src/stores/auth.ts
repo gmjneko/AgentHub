@@ -1,6 +1,7 @@
 import { reactive } from 'vue'
 import type { LoginPayload, RegisterPayload, UpdateUserPayload, UserView } from '@agenthub/shared'
 import { authApi } from '../api/auth'
+import { resetWorkspaceState } from './workspace'
 
 const STORAGE_KEY = 'agenthub.auth'
 
@@ -73,6 +74,7 @@ function clearSession(): void {
   authState.token = null
   authState.user = null
   writePersisted(null)
+  resetWorkspaceState()
   syncRunner()
 }
 

@@ -21,6 +21,7 @@ import type {
 import { CLAUDE_CAPABILITIES } from './capabilities.js'
 import { NOOP_LOGGER, type CoreLogger } from '../logger.js'
 import { validateMcp } from './mcp.js'
+import { isControlMcpTool } from '../control-mcp/names.js'
 
 /** 老版 TodoWrite 工具的 input 形状 (整批替换 todos) */
 interface ClaudeTodoInput {
@@ -160,6 +161,9 @@ export class ClaudeAdapter implements AgentAdapter {
       }
     }
     opts.canUseTool = async (toolName, input, context) => {
+      if (isControlMcpTool(toolName)) {
+        return { behavior: 'allow', updatedInput: input }
+      }
       const userInput = toolName === 'AskUserQuestion'
       if (!userInput && permissionMode === 'dontAsk') return { behavior: 'deny', message: 'Interactive permission is disabled' }
       const rawQuestions = Array.isArray(input.questions) ? input.questions as Array<{ question?: string; header?: string; multiSelect?: boolean; options?: Array<{ label?: string; description?: string }> }> : []

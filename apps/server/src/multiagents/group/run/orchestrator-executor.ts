@@ -1,10 +1,12 @@
 import { Injectable } from '@nestjs/common'
 import type { BlackboardTaskNode, GroupRouteKind, ProjectStatus } from '@agenthub/shared'
 import {
+    applyControlMcpConfig,
     createAgent,
+    withControlMcp,
     type AgentAdapter,
     type AgentAdapterConfig,
-    type AgentOutputSchema
+    type AgentEvent
 } from '../../adapter/index.js'
 import { AgentWorkspaceService } from '../../workspace/agent-workspace.service.js'
 import { PlatformProviderService } from '../../../platform-provider/platform-provider.service.js'
@@ -94,12 +96,12 @@ interface OrchestratorRunResult {
     text: string
     success: boolean
     error?: string
-    structuredOutput?: unknown
+    submission?: unknown
     sessionId?: string | null
 }
 
 /**
- * 系统内置编排提示词（用户不填）。要求 Orchestrator 仅输出结构化 JSON 计划。
+ * 系统内置编排提示词（用户不填）。要求 Orchestrator 调用 submit_orchestrator_plan 提交计划。
  */
 export const ORCHESTRATOR_SYSTEM_PROMPT = `你是 AgentHub 群聊的 Orchestrator（编排者），群里的一个持续参与者。
 <你的职责>
@@ -135,15 +137,15 @@ export const ORCHESTRATOR_SYSTEM_PROMPT = `你是 AgentHub 群聊的 Orchestrato
 - 简单需求用单个 task；复杂需求拆成多个 task。
 - 当原始用户需求是可交付产出（如实现一个页面/应用/功能）时，产品需求梳理、PRD、设计方案、调研只是前置步骤，不是最终完成；必须继续安排实现/验证等下游 task（可用 deps 串起来），除非用户明确只要规划文档。
 - 如果你先让产品/设计成员澄清或规划，规划完成后仍要根据原始目标继续把实际交付任务派给合适成员（例如前端工程师），不要在前置规划 task 完成后宣布整轮完成。
-- 任何会创建或修改可交付文件的 task，objective 必须提醒成员在收尾 report.affected.artifacts 中列出所有产出物工作区相对路径；侧边栏“产出物”依赖这些文件被服务端写入黑板产出物记录。
+- 任何会创建或修改可交付文件的 task，objective 必须提醒成员在 submit_member_report 的 affected.artifacts 中列出所有产出物工作区相对路径；侧边栏“产出物”依赖这些文件被服务端写入黑板产出物记录。
 - deps 表达真实先后依赖：无依赖的任务并行执行，有依赖的等其依赖完成后才执行。互不依赖的任务 deps 留空以便并行。
 - deps 只能引用本次 tasks 数组中已定义的 key，绝不引用不存在的 key（否则该任务会永久卡住）。
 - objective 要自包含、可独立执行：写清该成员本轮要达成的具体目标，而不是简单复述用户原话。
 
 # 输出契约
-- 只输出一个 JSON 对象，不要输出该 JSON 以外的任何解释、前后缀或代码块标记。
+- 必须调用 MCP 工具 submit_orchestrator_plan 提交计划，不要只输出 JSON 文本，也不要输出该工具参数以外的解释。
 - tasks 与 memberTurns 不可同时非空。
-- 形如：
+- 参数形如：
   任务：{"tasks":[{"key":"t1","name":"任务名","agentId":"<成员agentId>","deps":[],"objective":"该成员要达成的具体目标以及该成员的职责边界。例如它是前端工程师，那涉及到后端的部分就禁止他去做。并且提醒及时更新需要共享的事实信息。"}],"note":"给用户的说明"}
   直接回复：{"tasks":[],"note":"给用户的完整回复"}
   成员轻量发言：{"tasks":[],"note":"我请大家分别说一句。","memberTurns":[{"agentId":"<成员agentId>","instruction":"用户在向我们打招呼，以你的角色向大家打个招呼，用一句话介绍自己。"}]}
@@ -155,7 +157,7 @@ export const ORCHESTRATOR_SYSTEM_PROMPT = `你是 AgentHub 群聊的 Orchestrato
 /**
  * LlmOrchestratorPlanner — 用群配置的 vendor/model + 内置编排 prompt 跑一轮 LLM 产计划。
  *
- * 解析其输出的 JSON 计划；解析失败或产出非法（指派给非成员）时明确失败，
+ * 只解析 submit_orchestrator_plan 的 MCP 载荷；未调用工具、解析失败或指派给非成员时明确失败，
  * 不静默降级成规则分派，避免把 Orchestrator 伪装成真实编排。
  */
 @Injectable()
@@ -180,8 +182,7 @@ export class LlmOrchestratorExecutor implements OrchestratorExecutor {
             })
         }
 
-        const structuredPlan = this.parsePlanObject(result.structuredOutput, req)
-        const parsed = structuredPlan ?? this.parsePlanText(result.text, req)
+        const parsed = this.parsePlanObject(result.submission, req)
         if (!parsed) {
             this.debug.log('group.orchestrator_executor.parse_failed', {
                 groupId: req.group.id,
@@ -192,12 +193,11 @@ export class LlmOrchestratorExecutor implements OrchestratorExecutor {
             })
             throw BusinessException.upstream('Orchestrator returned an invalid plan', {
                 groupId: req.group.id,
+                reason: result.submission === undefined ? 'missing submit_orchestrator_plan' : 'invalid submit_orchestrator_plan',
                 outputPreview: result.text.slice(0, 1000)
             })
         }
         parsed.orchestratorSessionId = result.sessionId ?? null
-        const displayText = structuredPlan ? undefined : this.resolveDisplayText(result.text)
-        if (displayText) parsed.displayText = displayText
         this.debug.log('group.orchestrator_executor.parsed', {
             groupId: req.group.id,
             userId: req.userId,
@@ -220,8 +220,8 @@ export class LlmOrchestratorExecutor implements OrchestratorExecutor {
         )
         await this.agentWorkspace.ensureAgentHomeDirectory(req.group.orchestratorVendor, home)
 
-        // Orchestrator 只产 JSON 计划，不该读写真实仓库：禁用全部工具、plan 权限模式、
-        // cwd 指向 worktree 外的 home scratch（隔离掉直写共享仓库的风险）。
+        // Orchestrator 只提交计划，不该读写真实仓库：cwd 指向 home scratch，
+        // 仅注入 submit_orchestrator_plan MCP；Claude 用 allowedTools 收口，Codex 用 plan 只读沙箱。
         const config: AgentAdapterConfig = {
             id: `orch-${req.group.id}`,
             model: req.group.orchestratorModel,
@@ -231,10 +231,8 @@ export class LlmOrchestratorExecutor implements OrchestratorExecutor {
             baseUrl: provider.baseUrl,
             reasoningEffort: 'minimal',
             systemPrompt: ORCHESTRATOR_SYSTEM_PROMPT,
-            allowedTools: [],
             permissionMode: 'default'
         }
-        const adapter = this.createOrchestratorAdapter(req, config)
         const prompt = this.buildPrompt(req)
         this.debug.log('group.orchestrator_executor.prompt', {
             groupId: req.group.id,
@@ -247,27 +245,21 @@ export class LlmOrchestratorExecutor implements OrchestratorExecutor {
             systemPrompt: ORCHESTRATOR_SYSTEM_PROMPT,
             prompt
         })
-        const first = await this.sendPlanRequest(adapter, prompt, this.buildPlanOutputSchema(req))
-        this.debug.log('group.orchestrator_executor.output', {
-            groupId: req.group.id,
-            userId: req.userId,
-            attempt: 'schema',
-            result: first
+        return withControlMcp('submit_orchestrator_plan', undefined, async (control) => {
+            const adapter = this.createOrchestratorAdapter(
+                req,
+                applyControlMcpConfig(config, req.group.orchestratorVendor, control, 'control-only')
+            )
+            const result = await this.sendPlanRequest(adapter, prompt, control)
+            this.debug.log('group.orchestrator_executor.output', {
+                groupId: req.group.id,
+                userId: req.userId,
+                attempt: 'mcp',
+                result
+            })
+            if (result.success) return result
+            throw new Error(result.error ?? 'Orchestrator turn failed')
         })
-        if (first.success) return first
-
-        const fallback = await this.sendPlanRequest(
-            this.createOrchestratorAdapter(req, config),
-            prompt
-        )
-        this.debug.log('group.orchestrator_executor.output', {
-            groupId: req.group.id,
-            userId: req.userId,
-            attempt: 'fallback_text',
-            result: fallback
-        })
-        if (fallback.success) return fallback
-        throw new Error(fallback.error ?? first.error ?? 'Orchestrator turn failed')
     }
 
     private createOrchestratorAdapter(req: DecisionRequest, config: AgentAdapterConfig): AgentAdapter {
@@ -279,16 +271,17 @@ export class LlmOrchestratorExecutor implements OrchestratorExecutor {
     }
 
     private async sendPlanRequest(
-        adapter: ReturnType<typeof createAgent>,
+        adapter: AgentAdapter,
         prompt: string,
-        outputSchema?: AgentOutputSchema
+        control: { resolve(events: Iterable<AgentEvent>): Promise<{ payload: unknown } | null> }
     ): Promise<OrchestratorRunResult> {
         const parts: string[] = []
+        const events: AgentEvent[] = []
         let finalFromDone: string | null = null
-        let structuredOutput: unknown
         let success = true
         let error: string | undefined
-        for await (const ev of adapter.send(prompt, outputSchema ? { outputSchema } : undefined)) {
+        for await (const ev of adapter.send(prompt)) {
+            events.push(ev)
             if (ev.type === 'text') parts.push(ev.text)
             else if (ev.type === 'error' && ev.fatal) {
                 success = false
@@ -296,14 +289,14 @@ export class LlmOrchestratorExecutor implements OrchestratorExecutor {
             } else if (ev.type === 'done') {
                 success = ev.success
                 if (ev.finalText) finalFromDone = ev.finalText
-                structuredOutput = ev.structuredOutput
             }
         }
+        const submission = await control.resolve(events)
         return {
             text: this.combineTextParts(parts, finalFromDone),
             success,
             error,
-            structuredOutput,
+            submission: submission?.payload,
             sessionId: adapter.sessionId
         }
     }
@@ -315,100 +308,6 @@ export class LlmOrchestratorExecutor implements OrchestratorExecutor {
             merged.push(finalText)
         }
         return merged.join('\n\n').trim()
-    }
-
-    private resolveDisplayText(text: string): string | undefined {
-        const trimmed = text.trim()
-        if (!trimmed || this.looksLikePlanJson(trimmed)) return undefined
-        return trimmed
-    }
-
-    private looksLikePlanJson(text: string): boolean {
-        if (!text.startsWith('{') || !text.endsWith('}')) return false
-        try {
-            const parsed = JSON.parse(text) as { tasks?: unknown }
-            return Array.isArray(parsed.tasks)
-        } catch {
-            return false
-        }
-    }
-
-    private buildPlanOutputSchema(req: DecisionRequest): AgentOutputSchema {
-        const memberIds = req.context.memberStatus.map((m) => m.agentId)
-        return {
-            type: 'object',
-            properties: {
-                tasks: {
-                    type: 'array',
-                    minItems: 0,
-                    items: {
-                        type: 'object',
-                        properties: {
-                            key: { type: 'string' },
-                            name: { type: 'string' },
-                            agentId: {
-                                type: 'string',
-                                ...(memberIds.length > 0 ? { enum: memberIds } : {})
-                            },
-                            deps: {
-                                type: 'array',
-                                items: { type: 'string' }
-                            },
-                            objective: { type: 'string' }
-                        },
-                        required: ['key', 'name', 'agentId', 'deps', 'objective'],
-                        additionalProperties: false
-                    }
-                },
-                memberTurns: {
-                    type: 'array',
-                    items: {
-                        type: 'object',
-                        properties: {
-                            agentId: {
-                                type: 'string',
-                                ...(memberIds.length > 0 ? { enum: memberIds } : {})
-                            },
-                            instruction: { type: 'string' }
-                        },
-                        required: ['agentId', 'instruction'],
-                        additionalProperties: false
-                    }
-                },
-                contextUpdates: {
-                    type: 'object',
-                    properties: {
-                        projectName: { type: 'string' },
-                        projectGoal: { type: ['string', 'null'] },
-                        projectTechStack: {
-                            type: 'array',
-                            items: { type: 'string' }
-                        },
-                        projectStatus: {
-                            type: 'string',
-                            enum: ['planning', 'designing', 'development', 'done']
-                        },
-                        decisions: {
-                            type: 'array',
-                            items: {
-                                type: 'object',
-                                properties: {
-                                    content: { type: 'string' },
-                                    rationale: { type: ['string', 'null'] },
-                                    scope: { type: ['string', 'null'] }
-                                },
-                                required: ['content'],
-                                additionalProperties: false
-                            }
-                        }
-                    },
-                    additionalProperties: false
-                },
-                note: { type: 'string' }
-            },
-            required: ['tasks'],
-            additionalProperties: false
-        }
     }
 
     private buildPrompt(req: DecisionRequest): string {
@@ -431,7 +330,7 @@ export class LlmOrchestratorExecutor implements OrchestratorExecutor {
             `- 用户消息：${req.userText}`,
             `</决策信息>`,
             ``,
-            '请结合上文（用户的简短回复可能是对你上一轮提问的回答）按结构化输出 schema 返回计划，遵循系统提示中的三种输出模式与判定规则；必须只输出 JSON。'
+            '请结合上文（用户的简短回复可能是对你上一轮提问的回答）调用 submit_orchestrator_plan 提交计划，遵循系统提示中的三种输出模式与判定规则。'
         ].join('\n\n')
     }
 
@@ -442,18 +341,6 @@ export class LlmOrchestratorExecutor implements OrchestratorExecutor {
         return active
             .map((n) => `- [${n.status}] ${n.name}（@${n.agentId ?? '未指派'}）`)
             .join('\n')
-    }
-
-    private parsePlanText(text: string, req: DecisionRequest): OrchestratorDecision | null {
-        const json = this.extractJson(text)
-        if (!json) return null
-        let obj: unknown
-        try {
-            obj = JSON.parse(json)
-        } catch {
-            return null
-        }
-        return this.parsePlanObject(obj, req)
     }
 
     private parsePlanObject(obj: unknown, req: DecisionRequest): OrchestratorDecision | null {
@@ -589,15 +476,6 @@ export class LlmOrchestratorExecutor implements OrchestratorExecutor {
             turns.push({ agentId, instruction })
         }
         return turns
-    }
-
-    private extractJson(text: string): string | null {
-        const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/)
-        if (fenced) return fenced[1].trim()
-        const start = text.indexOf('{')
-        const end = text.lastIndexOf('}')
-        if (start >= 0 && end > start) return text.slice(start, end + 1)
-        return null
     }
 
     private errMsg(err: unknown): string {

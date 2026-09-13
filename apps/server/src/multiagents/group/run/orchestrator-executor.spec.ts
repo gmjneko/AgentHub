@@ -1,5 +1,6 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
+import { BusinessException } from '../../../common/index.js'
 import type { GroupChat } from '../entities/group-chat.entity.js'
 import {
     LlmOrchestratorExecutor,
@@ -11,7 +12,7 @@ interface StubRunResult {
     text: string
     success: boolean
     error?: string
-    structuredOutput?: unknown
+    submission?: unknown
     sessionId?: string | null
 }
 
@@ -64,14 +65,14 @@ function planRequest(): DecisionRequest {
     }
 }
 
-test('LlmOrchestratorPlanner ignores raw SDK text when structured output is available', async () => {
+test('LlmOrchestratorPlanner ignores raw SDK text when MCP submission is available', async () => {
     const note =
         '大家好！欢迎来到 AgentHub。我是 Orchestrator，负责协调大家的工作。请问今天想做什么项目？'
     const json = JSON.stringify({ tasks: [], note })
     const planner = createPlanner({
         text: [json, json, note].join('\n\n'),
         success: true,
-        structuredOutput: { tasks: [], note },
+        submission: { tasks: [], note },
         sessionId: 'sdk-session-1'
     })
 
@@ -80,4 +81,25 @@ test('LlmOrchestratorPlanner ignores raw SDK text when structured output is avai
     assert.equal(plan.note, note)
     assert.equal(plan.displayText, undefined)
     assert.equal(plan.orchestratorSessionId, 'sdk-session-1')
+})
+
+test('LlmOrchestratorPlanner rejects text JSON when MCP submission is missing', async () => {
+    const note = '大家好！我是 Orchestrator。'
+    const planner = createPlanner({
+        text: JSON.stringify({ tasks: [], note }),
+        success: true,
+        sessionId: 'sdk-session-2'
+    })
+
+    await assert.rejects(
+        () => planner.decide(planRequest()),
+        (err: unknown) => {
+            assert.ok(err instanceof BusinessException)
+            assert.equal(
+                (err.details as { reason?: string } | undefined)?.reason,
+                'missing submit_orchestrator_plan'
+            )
+            return true
+        }
+    )
 })

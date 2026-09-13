@@ -351,13 +351,19 @@ onUnmounted(releaseAllFilePreviewUrls)
 
 <template>
   <div
-    class="p-4 border-t border-surface-border bg-surface flex-shrink-0"
-    :class="dragActive ? 'bg-primary-soft/60' : ''"
-    @dragover="onDragOver"
-    @dragleave="onDragLeave"
-    @drop="onDrop"
+    class="pointer-events-none relative z-20 flex shrink-0 justify-center px-6 pb-5 pt-3"
   >
-    <div class="flex flex-col">
+    <div
+      class="pointer-events-none absolute inset-0 bg-gradient-to-t from-background via-background/92 to-transparent"
+      :class="dragActive ? 'from-primary-soft/80' : ''"
+    ></div>
+    <div
+      class="pointer-events-auto relative flex w-full max-w-3xl flex-col rounded-2xl border border-surface-border bg-surface p-3 shadow-lg"
+      :class="dragActive ? 'ring-2 ring-primary/20' : ''"
+      @dragover="onDragOver"
+      @dragleave="onDragLeave"
+      @drop="onDrop"
+    >
       <div
         v-if="replyTo"
         class="mb-2 flex items-start justify-between bg-background border-l-2 border-primary rounded px-3 py-2"
@@ -473,10 +479,10 @@ onUnmounted(releaseAllFilePreviewUrls)
           v-model="text"
           :disabled="disabled"
           :class="[
-            'w-full h-[72px] p-0 resize-none border-none focus:ring-0 focus:outline-none text-md text-text-main bg-transparent leading-[22px]',
+            'h-[64px] w-full resize-none border-none bg-transparent p-1 text-md leading-[22px] text-text-main focus:outline-none focus:ring-0',
             disabledReason ? 'placeholder:text-text-main' : 'placeholder-text-muted'
           ]"
-          :placeholder="disabledReason ?? 'Type a message or /command...'"
+          :placeholder="disabledReason ?? '写下任务，或用 @ 点名一位 Agent…'"
           @compositionstart="isComposing = true"
           @compositionend="onCompositionEnd"
           @input="onInput"
@@ -519,19 +525,19 @@ onUnmounted(releaseAllFilePreviewUrls)
         </div>
         <button
           v-if="streaming"
-          class="bg-surface text-text-main border border-surface-border px-5 py-1.5 rounded text-base font-medium flex items-center space-x-1.5 hover:bg-gray-150 transition-colors"
+          class="flex items-center space-x-1.5 rounded-full border border-surface-border bg-surface px-4 py-1.5 text-base font-medium text-text-main transition-colors hover:bg-gray-150"
           @click="emit('stop')"
         >
-          <span>停止&nbsp;</span>
+          <span>停止</span>
           <span class="material-symbols-outlined text-xl">stop_circle</span>
         </button>
         <button
           v-else
-          class="bg-primary text-white px-5 py-1.5 rounded text-base font-medium flex items-center space-x-1.5 hover:bg-primary-hover transition-colors disabled:opacity-50"
+          class="flex items-center space-x-1.5 rounded-full bg-text-main px-4 py-1.5 text-base font-medium text-white transition-colors hover:bg-gray-600 disabled:opacity-50"
           :disabled="disabled || isComposing || !canSend"
           @click="submit"
         >
-          <span>发送&nbsp;</span>
+          <span>发送</span>
           <span class="material-symbols-outlined text-xl">send</span>
         </button>
       </div>

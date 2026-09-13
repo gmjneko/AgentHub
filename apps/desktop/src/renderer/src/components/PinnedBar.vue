@@ -58,7 +58,7 @@ function onJump(msg: ChatDisplayMessage): void {
 </script>
 
 <template>
-  <div v-if="latest" class="flex-shrink-0 border-b border-surface-border bg-surface px-3 py-2">
+  <div v-if="latest" class="mx-auto w-full max-w-3xl flex-shrink-0 px-6 pt-3">
     <button
       type="button"
       class="group relative flex w-full items-center gap-3 overflow-hidden rounded-md border border-warning-border/80 bg-gradient-to-r from-warning-soft via-white to-white px-3 py-2 text-left shadow-sm transition-all duration-200 ease-soft hover:border-warning hover:shadow-md"

@@ -20,6 +20,7 @@ const emit = defineEmits<{
 }>()
 
 const expanded = ref(false)
+const expandedStepIds = ref<Record<string, boolean>>({})
 
 const hasText = computed(() => props.message.text.trim().length > 0)
 const renderedText = computed(() => renderMarkdown(props.message.text))
@@ -112,6 +113,21 @@ function stepOutput(step: AgentRunStep): string {
   return formatPayload(step.output)
 }
 
+function stepHasDetails(step: AgentRunStep): boolean {
+  return Boolean(step.text?.trim()) || Boolean(stepInput(step)) || Boolean(stepOutput(step))
+}
+
+function isStepExpanded(stepId: string): boolean {
+  return expandedStepIds.value[stepId] === true
+}
+
+function toggleStep(stepId: string): void {
+  expandedStepIds.value = {
+    ...expandedStepIds.value,
+    [stepId]: !expandedStepIds.value[stepId]
+  }
+}
+
 function todoStatusLabel(status: AgentTodoItem['status']): string {
   const labels: Record<AgentTodoItem['status'], string> = {
     pending: '待办',
@@ -135,23 +151,16 @@ function todoStatusLabel(status: AgentTodoItem['status']): string {
     </div>
   </div>
 
-  <div v-else class="flex space-x-3">
+  <div v-else class="flex items-start space-x-3">
     <SenderAvatar :sender="message.sender" />
-    <div class="flex flex-col max-w-[80%]">
-      <div class="flex items-center space-x-2 mb-1 ml-1">
-        <span class="text-sm font-semibold text-text-main">{{ message.sender.name }}</span>
-        <span class="text-sm text-text-muted">{{ formatTime(message.timestamp) }}</span>
-      </div>
-      <div
-        class="bg-surface-hover border border-surface-border p-3 rounded-xl rounded-tl-sm text-md whitespace-pre-wrap break-words"
-        :class="{
-          'w-72 max-w-full': isInitialThinking,
-          'w-96 max-w-full': hasPlan && !isInitialThinking
-        }"
-      >
+    <div class="min-w-0 flex-1 space-y-2">
+    <div class="text-xs text-text-muted">
+      {{ message.sender.name }} · {{ formatTime(message.timestamp) }}
+    </div>
+    <div class="text-md whitespace-pre-wrap break-words">
         <div
           v-if="planDoc"
-          class="mb-3 overflow-hidden rounded-sm border border-surface-border bg-white/70"
+          class="mb-3 overflow-hidden rounded-sm border border-surface-border/80"
         >
           <div
             class="flex items-center space-x-1.5 border-b border-surface-border px-2.5 py-1.5 text-xs font-medium text-text-muted"
@@ -167,7 +176,7 @@ function todoStatusLabel(status: AgentTodoItem['status']): string {
 
         <div
           v-if="planTodos.length"
-          class="mb-3 overflow-hidden rounded-sm border border-surface-border bg-white/70"
+          class="mb-3 overflow-hidden rounded-sm border border-surface-border/80"
         >
           <div
             class="flex items-center space-x-1.5 border-b border-surface-border px-2.5 py-1.5 text-xs font-medium text-text-muted"
@@ -217,11 +226,12 @@ function todoStatusLabel(status: AgentTodoItem['status']): string {
         <button
           v-if="showRunToggle"
           type="button"
-          class="mb-2 flex w-full items-center justify-between rounded-sm border border-surface-border bg-white/70 px-2.5 py-1.5 text-left text-sm text-text-muted transition-colors hover:bg-white hover:text-text-main"
+          class="mb-2 flex w-full items-center justify-between rounded-md px-0 py-1 text-left text-sm text-text-muted transition-colors hover:text-text-main"
           @click="expanded = !expanded"
         >
-          <span>
-            运行过程 · {{ completedCount }} 步
+          <span class="flex items-center gap-1.5">
+            <span class="material-symbols-outlined text-lg text-success">check</span>
+            已处理 · {{ completedCount }} 步
             <span v-if="activeStep"> · {{ activeStep.label }}</span>
           </span>
           <span
@@ -244,7 +254,7 @@ function todoStatusLabel(status: AgentTodoItem['status']): string {
         <Transition name="run-panel">
           <div
             v-if="showRunPanel"
-            class="mb-3 overflow-hidden rounded-sm border border-surface-border bg-white/70 shadow-[inset_0_1px_0_rgba(255,255,255,0.72)]"
+            class="mb-3 overflow-hidden rounded-sm border border-surface-border/80"
           >
             <div
               v-if="!hasText && !isInitialThinking"
@@ -256,13 +266,20 @@ function todoStatusLabel(status: AgentTodoItem['status']): string {
             <div
               v-for="step in visibleSteps"
               :key="step.id"
-              class="border-b border-surface-border/70 px-2.5 py-2 text-sm last:border-b-0"
+              class="border-b border-surface-border/70 last:border-b-0"
               :class="[
-                step.status === 'active' ? 'bg-white/70 text-text-main' : 'text-text-muted',
+                step.status === 'active' ? 'text-text-main' : 'text-text-muted',
                 step.status === 'failed' ? 'text-danger-strong' : ''
               ]"
             >
-              <div class="flex items-center space-x-2">
+              <button
+                type="button"
+                class="flex w-full items-center space-x-2 px-2.5 py-2 text-left text-sm disabled:opacity-100"
+                :class="stepHasDetails(step) ? 'cursor-pointer hover:bg-surface-hover/70' : 'cursor-default'"
+                :disabled="!stepHasDetails(step)"
+                :aria-expanded="stepHasDetails(step) ? isStepExpanded(step.id) : undefined"
+                @click="toggleStep(step.id)"
+              >
                 <span
                   class="material-symbols-outlined text-lg"
                   :class="step.status === 'active' ? 'text-primary' : 'text-text-muted'"
@@ -280,28 +297,36 @@ function todoStatusLabel(status: AgentTodoItem['status']): string {
                     :style="{ animationDelay: `${(dot - 1) * 140}ms` }"
                   />
                 </span>
+                <span
+                  v-if="stepHasDetails(step)"
+                  class="material-symbols-outlined text-lg text-text-muted transition-transform duration-200 ease-soft"
+                  :class="{ 'rotate-180': isStepExpanded(step.id) }"
+                  >expand_more</span
+                >
+              </button>
+
+              <div v-if="isStepExpanded(step.id) && stepHasDetails(step)" class="px-2.5 pb-2 text-sm">
+                <div
+                  v-if="step.text"
+                  class="whitespace-pre-wrap break-words text-text-main"
+                  v-text="step.text"
+                ></div>
+
+                <pre
+                  v-if="stepInput(step)"
+                  class="mt-1.5 max-h-40 overflow-auto rounded-sm border border-surface-border bg-surface px-2 py-1.5 text-xs leading-5 text-text-main"
+                  >{{ stepInput(step) }}</pre
+                >
+                <pre
+                  v-if="stepOutput(step)"
+                  class="mt-1.5 max-h-48 overflow-auto rounded-sm border border-surface-border bg-surface px-2 py-1.5 text-xs leading-5 text-text-main"
+                  >{{ stepOutput(step) }}</pre
+                >
               </div>
 
               <div
-                v-if="step.text"
-                class="mt-1.5 whitespace-pre-wrap break-words text-text-main"
-                v-text="step.text"
-              ></div>
-
-              <pre
-                v-if="stepInput(step)"
-                class="mt-1.5 max-h-40 overflow-auto rounded-sm border border-surface-border bg-surface px-2 py-1.5 text-xs leading-5 text-text-main"
-                >{{ stepInput(step) }}</pre
-              >
-              <pre
-                v-if="stepOutput(step)"
-                class="mt-1.5 max-h-48 overflow-auto rounded-sm border border-surface-border bg-surface px-2 py-1.5 text-xs leading-5 text-text-main"
-                >{{ stepOutput(step) }}</pre
-              >
-
-              <div
-                v-if="step.status === 'active' && step.type === 'progress'"
-                class="mt-1.5 flex h-[18px] items-center space-x-1"
+                v-if="step.status === 'active' && step.type === 'progress' && !isStepExpanded(step.id)"
+                class="flex h-[18px] items-center space-x-1 px-2.5 pb-2"
               >
                 <span
                   v-for="dot in 3"
@@ -318,11 +343,11 @@ function todoStatusLabel(status: AgentTodoItem['status']): string {
       </div>
 
       <!-- 内联产物卡片：主体预览，右侧编辑按钮打开全屏编辑窗口 -->
-      <div v-if="previewArtifacts.length" class="mt-2 flex flex-col gap-2">
+      <div v-if="previewArtifacts.length" class="mt-3 flex flex-col gap-2">
         <div
           v-for="artifact in previewArtifacts"
           :key="artifact.id"
-          class="group flex items-stretch overflow-hidden rounded-xl border border-surface-border bg-surface shadow-sm transition-colors hover:border-primary/40 hover:bg-surface-hover"
+          class="group flex items-stretch overflow-hidden rounded-lg border border-surface-border bg-white shadow-sm transition-colors hover:border-primary/40 hover:bg-surface-hover"
         >
           <button
             type="button"

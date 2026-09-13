@@ -5,12 +5,15 @@ import type {
   BlackboardTaskStatus,
   BlackboardView,
   GroupChatView,
-  GroupMemberView
+  GroupMemberView,
+  WorkspaceDiffSummary
 } from '../api'
 import { shouldShowBlackboardArtifact } from '../utils/blackboard'
 import { vendorLabel } from '../utils/vendor'
 import AgentAvatar from './AgentAvatar.vue'
 import GroupAvatar from './GroupAvatar.vue'
+import InspectorSection from './InspectorSection.vue'
+import WorkspaceDiffPanel from './WorkspaceDiffPanel.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -19,6 +22,11 @@ const props = withDefaults(
     loading?: boolean
     blackboardLoading?: boolean
     mode?: 'page' | 'inspector'
+    diff?: WorkspaceDiffSummary | null
+    diffLoading?: boolean
+    diffError?: string | null
+    diffCommitting?: boolean
+    diffDisabled?: boolean
   }>(),
   {
     mode: 'page'
@@ -27,6 +35,8 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   (e: 'open-artifact', artifact: BlackboardArtifact): void
+  (e: 'refresh-diff'): void
+  (e: 'commit-diff'): void
 }>()
 
 const taskTone: Record<BlackboardTaskStatus, string> = {
@@ -65,6 +75,144 @@ const visibleArtifacts = computed(
   >
     <template v-if="loading">
       <div class="flex flex-1 items-center justify-center text-text-muted">正在加载群聊资料…</div>
+    </template>
+
+    <template v-else-if="group && isInspector">
+      <header class="flex h-12 flex-shrink-0 items-center gap-3 border-b border-surface-border px-4">
+        <GroupAvatar :members="group.members" :title="group.title" size="sm" />
+        <div class="min-w-0 flex-1">
+          <h2 class="truncate text-md font-semibold text-text-main">{{ group.title }}</h2>
+          <div class="truncate text-xs text-text-muted">
+            {{ group.members.length }} 个 Agent · {{ group.projectMeta.name }}
+          </div>
+        </div>
+      </header>
+      <div class="flex-1 overflow-y-auto">
+        <InspectorSection title="环境信息" icon="folder">
+          <div class="space-y-3 text-sm">
+            <div>
+              <div class="font-medium text-text-muted">项目目标</div>
+              <p class="mt-1 whitespace-pre-wrap leading-6 text-text-main">
+                {{ group.projectMeta.goal || '暂未设置目标' }}
+              </p>
+              <div class="mt-2 flex flex-wrap gap-1.5">
+                <span class="rounded bg-surface-hover px-1.5 py-0.5 text-xs text-text-muted">
+                  {{ group.projectMeta.status }}
+                </span>
+                <span
+                  v-for="tech in group.projectMeta.techStack"
+                  :key="tech"
+                  class="rounded bg-surface-hover px-1.5 py-0.5 text-xs text-text-main"
+                >
+                  {{ tech }}
+                </span>
+              </div>
+            </div>
+            <div>
+              <div class="mb-2 font-medium text-text-muted">成员</div>
+              <div class="space-y-2">
+                <div
+                  v-for="member in group.members"
+                  :key="member.agentId"
+                  class="flex min-w-0 items-center gap-2.5"
+                >
+                  <AgentAvatar
+                    :name="member.name"
+                    :avatar="member.avatar"
+                    :color="member.color"
+                    size="sm"
+                  />
+                  <div class="min-w-0">
+                    <div class="truncate text-sm font-medium text-text-main">{{ member.name }}</div>
+                    <div class="truncate text-xs text-text-muted">{{ memberRole(member) }}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div>
+              <div class="font-medium text-text-muted">Orchestrator</div>
+              <div class="mt-0.5 break-words text-text-main">
+                {{ vendorLabel(group.orchestrator.vendor) }} / {{ group.orchestrator.model }}
+              </div>
+            </div>
+            <div>
+              <div class="font-medium text-text-muted">Workspace</div>
+              <div class="mt-0.5 break-all font-mono text-xs text-text-main">
+                {{ group.workspaceDir }}
+              </div>
+            </div>
+          </div>
+          <WorkspaceDiffPanel
+            class="mt-4"
+            :diff="diff"
+            :loading="diffLoading"
+            :error="diffError"
+            :committing="diffCommitting"
+            :disabled="diffDisabled"
+            @refresh="emit('refresh-diff')"
+            @commit="emit('commit-diff')"
+          />
+        </InspectorSection>
+
+        <InspectorSection title="任务清单" icon="checklist">
+          <p v-if="blackboardLoading" class="text-sm text-text-muted">黑板加载中…</p>
+          <p
+            v-else-if="!blackboard || blackboard.taskGraph.length === 0"
+            class="text-sm text-text-muted"
+          >
+            暂无任务
+          </p>
+          <div v-else class="space-y-2">
+            <div
+              v-for="task in blackboard.taskGraph"
+              :key="task.id"
+              class="rounded-md border border-surface-border bg-white px-3 py-2"
+            >
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <div class="truncate text-sm font-medium text-text-main">{{ task.name }}</div>
+                  <p class="mt-1 line-clamp-2 text-xs text-text-muted">{{ task.objective }}</p>
+                </div>
+                <span
+                  class="flex-shrink-0 rounded px-1.5 py-0.5 text-xs font-medium"
+                  :class="taskTone[task.status]"
+                >
+                  {{ task.status }}
+                </span>
+              </div>
+            </div>
+          </div>
+        </InspectorSection>
+
+        <InspectorSection
+          title="产物"
+          icon="deployed_code"
+          :default-open="visibleArtifacts.length > 0"
+        >
+          <p v-if="visibleArtifacts.length === 0" class="text-sm text-text-muted">暂无产出物</p>
+          <div v-else class="space-y-1.5">
+            <button
+              v-for="artifact in visibleArtifacts"
+              :key="artifact.id"
+              type="button"
+              class="block w-full rounded-md px-2 py-1.5 text-left transition-colors hover:bg-surface-hover"
+              @click="emit('open-artifact', artifact)"
+            >
+              <div class="truncate font-mono text-sm text-text-main">{{ artifact.path }}</div>
+              <div class="truncate text-xs text-text-muted">
+                v{{ artifact.version }} · {{ artifact.status }}
+              </div>
+            </button>
+          </div>
+          <div v-if="blackboard?.decisions.length" class="mt-4">
+            <div class="mb-2 text-xs font-semibold text-text-muted">决策</div>
+            <div v-for="decision in blackboard.decisions" :key="decision.id" class="mb-2">
+              <p class="line-clamp-2 text-sm text-text-main">{{ decision.content }}</p>
+              <div class="mt-0.5 text-xs text-text-muted">{{ decision.status }}</div>
+            </div>
+          </div>
+        </InspectorSection>
+      </div>
     </template>
 
     <template v-else-if="group">

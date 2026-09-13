@@ -11,7 +11,7 @@
 
 设计决策（与用户确认）：
 
-- 启动命令来源：**Agent 显式声明** —— 由 `orchestrator-final-reviewer` 的结构化输出新增 `deploy` 字段给出 `command` / `port` / `installCommand`，比"自动探测"可靠。无 final review 时降级为探测产物里的 `index.html` → 静态卡。
+- 启动命令来源：**Agent 显式声明** —— 由 `orchestrator-final-reviewer` 经 `submit_final_review` 提交的 `deploy` 字段给出 `command` / `port` / `installCommand`，比"自动探测"可靠。无 final review 时降级为探测产物里的 `index.html` → 静态卡。
 - 缺依赖：**自动 install** —— 项目缺 `node_modules` 时先跑声明的 `installCommand`（会执行依赖的 postinstall 脚本，已知风险）。
 - 安全底线：**人工确认 + 可终止** —— 服务端绝不自动 spawn；卡片只展示命令，用户点「运行」才触发；运行中抽屉常驻「停止」按钮（杀进程树），切群/关闭自动清理。
 - 运行后端抽象为 `DeploymentRunner` 接口，本期实现本机 `child_process.spawn`（`LocalProcessRunner`），**Docker 隔离留作后续实现**（多用户场景的真隔离）。

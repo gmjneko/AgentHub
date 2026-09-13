@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type {
   AgentChatMessageView,
   AgentChatView,
@@ -11,7 +11,6 @@ import type {
   BlackboardView,
   ChatDetail,
   AgentQuestionMessage,
-  ChatSummary,
   DeployManifest,
   DeploymentView,
   GroupChatView,
@@ -29,11 +28,19 @@ import { ApiError, agentApi, interactionApi } from '../api'
 import { agentChatApi, type AgentConverseHandlers, type AgentConverseStream } from '../api/agents'
 import { groupChatApi, type GroupRunStream } from '../api/group-chats'
 import { authState } from '../stores/auth'
+import {
+  registerWorkspaceHandlers,
+  setActiveSessionKey,
+  setWorkspaceSessions,
+  workspaceState,
+  type WorkspaceSessionItem
+} from '../stores/workspace'
 import { groupMessageToDisplay, type GroupSenderMeta } from '../utils/groupMessage'
 import { agentModelLabel, vendorLabel } from '../utils/vendor'
 import { runStepFromView } from '../utils/agentRunSteps'
 import {
   isAgentRunMessage,
+  isDeployMessage,
   type AgentRunMessage,
   type AgentRunStep,
   type ChatDisplayMessage,
@@ -43,11 +50,9 @@ import type { MentionTarget } from '../types/mentions'
 import { agentInitials } from '../utils/avatar'
 import { formatTime } from '../utils/format'
 import { isInlinePreviewable } from '../utils/artifactPreview'
-import ChatList from '../components/ChatList.vue'
 import ChatHeader from '../components/ChatHeader.vue'
 import MessageList from '../components/MessageList.vue'
 import MessageInput from '../components/MessageInput.vue'
-import WorkspaceDiffPanel from '../components/WorkspaceDiffPanel.vue'
 import RightInspector from '../components/RightInspector.vue'
 import PinnedBar from '../components/PinnedBar.vue'
 import AgentChatCreateDialog from '../components/AgentChatCreateDialog.vue'
@@ -60,13 +65,7 @@ import DeploymentDrawer from '../components/DeploymentDrawer.vue'
 
 type RuntimePhase = 'idle' | 'thinking' | 'tool' | 'streaming' | 'error' | 'done'
 type SessionKind = 'agent' | 'group'
-type ChatListItem = ChatSummary & {
-  pinned: boolean
-  archived: boolean
-  running?: boolean
-  updatedAt?: string
-  groupMembers?: GroupMemberView[]
-}
+type ChatListItem = WorkspaceSessionItem
 interface ActiveDeploymentState {
   groupId: string
   view: DeploymentView
@@ -81,13 +80,8 @@ type SendMessagePayload = {
   files?: File[]
 }
 
-const CHAT_LIST_WIDTH_STORAGE_KEY = 'agenthub:chat-list-width'
 const INSPECTOR_WIDTH_STORAGE_KEY = 'agenthub:right-inspector-width'
-const GLOBAL_SIDEBAR_WIDTH = 68
 const MIN_MAIN_WIDTH = 420
-const CHAT_LIST_MIN_WIDTH = 220
-const CHAT_LIST_DEFAULT_WIDTH = 280
-const CHAT_LIST_MAX_WIDTH = 420
 const INSPECTOR_MIN_WIDTH = 260
 const INSPECTOR_DEFAULT_WIDTH = 300
 const INSPECTOR_MAX_WIDTH = 520
@@ -125,9 +119,8 @@ const activeDeployment = ref<ActiveDeploymentState | null>(null)
 const deploymentStarting = ref(false)
 const groupBlackboards = new Map<string, BlackboardView | null>()
 const workspaceDiffCache = new Map<string, WorkspaceDiffSummary | null>()
-const chatListWidth = ref(readStoredWidth(CHAT_LIST_WIDTH_STORAGE_KEY, CHAT_LIST_DEFAULT_WIDTH))
 const inspectorWidth = ref(readStoredWidth(INSPECTOR_WIDTH_STORAGE_KEY, INSPECTOR_DEFAULT_WIDTH))
-const resizingPane = ref<'chat-list' | 'inspector' | null>(null)
+const resizingPane = ref<'inspector' | null>(null)
 const messageCache = new Map<string, ChatDisplayMessage[]>()
 const localAttachmentPreviewUrls = new Set<string>()
 const turnStreams = new Map<string, AgentConverseStream>()
@@ -151,7 +144,6 @@ const messagesLoading = ref(false)
 const runningChatIds = ref<Set<string>>(new Set())
 const createChatOpen = ref(false)
 const createGroupOpen = ref(false)
-const chatSearchQuery = ref('')
 const deleteChatTarget = ref<ChatListItem | null>(null)
 const deleteChatConfirmOpen = ref(false)
 const deletingChat = ref(false)
@@ -283,7 +275,7 @@ const chats = computed<ChatListItem[]>(() => {
     }
   })
 
-  const query = normalizeSearchQuery(chatSearchQuery.value)
+  const query = normalizeSearchQuery(workspaceState.searchQuery)
   return [...agentItems, ...groupItems]
     .filter((entry) => !query || normalizeSearchQuery(entry.searchText).includes(query))
     .sort((a, b) => {
@@ -303,6 +295,21 @@ const deleteChatMessage = computed(() => {
   if (!chat) return ''
   const base = `确认删除聊天「${chat.title}」？聊天记录会一并删除。`
   return deleteChatError.value ? `${base}\n${deleteChatError.value}` : base
+})
+
+const activeArtifacts = computed<BlackboardArtifact[]>(() => {
+  const seen = new Set<string>()
+  const items: BlackboardArtifact[] = []
+  for (const msg of messages.value) {
+    const arts =
+      isAgentRunMessage(msg) || isDeployMessage(msg) ? (msg.artifacts ?? []) : []
+    for (const artifact of arts) {
+      if (seen.has(artifact.id)) continue
+      seen.add(artifact.id)
+      items.push(artifact)
+    }
+  }
+  return items
 })
 
 const chatDetail = computed<ChatDetail | null>(() => {
@@ -434,36 +441,28 @@ function readStoredWidth(key: string, fallback: number): number {
   return Number.isFinite(value) ? value : fallback
 }
 
-function mainAwareMaxWidth(kind: 'chat-list' | 'inspector'): number {
-  const otherSideWidth = kind === 'chat-list' ? inspectorWidth.value : chatListWidth.value
-  return window.innerWidth - GLOBAL_SIDEBAR_WIDTH - MIN_MAIN_WIDTH - otherSideWidth
+function inspectorMaxWidth(): number {
+  return window.innerWidth - workspaceState.sidebarWidth - MIN_MAIN_WIDTH
 }
 
 function normalizePaneWidths(): void {
-  chatListWidth.value = clamp(
-    chatListWidth.value,
-    CHAT_LIST_MIN_WIDTH,
-    Math.min(CHAT_LIST_MAX_WIDTH, mainAwareMaxWidth('chat-list'))
-  )
   inspectorWidth.value = clamp(
     inspectorWidth.value,
     INSPECTOR_MIN_WIDTH,
-    Math.min(INSPECTOR_MAX_WIDTH, mainAwareMaxWidth('inspector'))
+    Math.min(INSPECTOR_MAX_WIDTH, inspectorMaxWidth())
   )
 }
 
-function persistPaneWidth(kind: 'chat-list' | 'inspector'): void {
-  const key = kind === 'chat-list' ? CHAT_LIST_WIDTH_STORAGE_KEY : INSPECTOR_WIDTH_STORAGE_KEY
-  const width = kind === 'chat-list' ? chatListWidth.value : inspectorWidth.value
-  localStorage.setItem(key, String(width))
+function persistPaneWidth(): void {
+  localStorage.setItem(INSPECTOR_WIDTH_STORAGE_KEY, String(inspectorWidth.value))
 }
 
-function startPaneResize(kind: 'chat-list' | 'inspector', event: PointerEvent): void {
+function startPaneResize(event: PointerEvent): void {
   if (event.button !== 0) return
   event.preventDefault()
-  resizingPane.value = kind
+  resizingPane.value = 'inspector'
   dragStartX = event.clientX
-  dragStartWidth = kind === 'chat-list' ? chatListWidth.value : inspectorWidth.value
+  dragStartWidth = inspectorWidth.value
   previousBodyCursor = document.body.style.cursor
   previousBodyUserSelect = document.body.style.userSelect
   document.body.style.cursor = 'col-resize'
@@ -473,30 +472,18 @@ function startPaneResize(kind: 'chat-list' | 'inspector', event: PointerEvent): 
 }
 
 function onPaneResizeMove(event: PointerEvent): void {
-  const kind = resizingPane.value
-  if (!kind) return
-
-  const delta = event.clientX - dragStartX
-  if (kind === 'chat-list') {
-    chatListWidth.value = clamp(
-      dragStartWidth + delta,
-      CHAT_LIST_MIN_WIDTH,
-      Math.min(CHAT_LIST_MAX_WIDTH, mainAwareMaxWidth('chat-list'))
-    )
-    return
-  }
-
+  if (!resizingPane.value) return
   inspectorWidth.value = clamp(
-    dragStartWidth - delta,
+    dragStartWidth - (event.clientX - dragStartX),
     INSPECTOR_MIN_WIDTH,
-    Math.min(INSPECTOR_MAX_WIDTH, mainAwareMaxWidth('inspector'))
+    Math.min(INSPECTOR_MAX_WIDTH, inspectorMaxWidth())
   )
 }
 
 function stopPaneResize(): void {
   const kind = resizingPane.value
   if (!kind) return
-  persistPaneWidth(kind)
+  persistPaneWidth()
   resizingPane.value = null
   document.body.style.cursor = previousBodyCursor
   document.body.style.userSelect = previousBodyUserSelect
@@ -506,6 +493,7 @@ function stopPaneResize(): void {
 
 function clearChatWorkspace(): void {
   activeSessionKey.value = null
+  setActiveSessionKey(null)
   messages.value = []
   activeGroupBlackboard.value = null
   activeWorkspaceDiff.value = null
@@ -1196,15 +1184,44 @@ function ensureGroupMemberRunMessage(
   return runKey
 }
 
-function ensureGroupMemberChatRunMessage(
+function memberChatSubmittedText(event: AgentEvent): string | null {
+  if (event.type !== 'tool_use') return null
+  const tool = event.mcp?.tool ?? event.name
+  if (!tool.endsWith('submit_member_chat')) return null
+  const input = event.input
+  if (!input || typeof input !== 'object') return null
+  const text = (input as { text?: unknown }).text
+  return typeof text === 'string' && text.trim() ? text.trim() : null
+}
+
+function upsertGroupMemberChatText(
   group: GroupChatView,
   runId: string,
-  agentId: string
-): string {
+  agentId: string,
+  text: string,
+  messageIds: Map<string, string>
+): void {
   const sessionKey = groupSessionKey(group.id)
   const runKey = groupRunMemberChatKey(group.id, runId, agentId)
-  ensureRunMessage(runKey, sessionKey, groupMemberSender(group, agentId))
-  return runKey
+  const existingId = messageIds.get(runKey)
+  if (existingId) {
+    updateCachedMessages(sessionKey, (cached) =>
+      cached.map((message) =>
+        message.id === existingId && message.kind === 'text' ? { ...message, text } : message
+      )
+    )
+    return
+  }
+  const message: TextMessage = {
+    id: `m-member-chat-${runId}-${agentId}`,
+    chatId: sessionKey,
+    kind: 'text',
+    timestamp: new Date().toISOString(),
+    sender: groupMemberSender(group, agentId),
+    text
+  }
+  messageIds.set(runKey, message.id)
+  appendMessage(sessionKey, message)
 }
 
 function updateGroupPlanMessage(
@@ -1526,12 +1543,17 @@ async function detachAllTurns(): Promise<void> {
 }
 
 async function selectChat(key: string): Promise<void> {
+  if (activeSessionKey.value === key) {
+    setActiveSessionKey(key)
+    return
+  }
   const nextKind = sessionKind(key)
   const nextGroupId = nextKind === 'group' ? sessionRawId(key) : null
   if (activeDeployment.value && activeDeployment.value.groupId !== nextGroupId) {
     await closeDeployment()
   }
   activeSessionKey.value = key
+  setActiveSessionKey(key)
   pendingReply.value = null
   previewArtifact.value = null
   overlayArtifact.value = null
@@ -1982,6 +2004,7 @@ function buildGroupRunHandlers(
   const groupId = group.id
   const key = groupSessionKey(groupId)
   const memberTexts = new Map<string, string>()
+  const memberChatTextIds = new Map<string, string>()
   const completedMemberKeys = new Set<string>()
   let groupFinished = false
   let success = false
@@ -2032,25 +2055,35 @@ function buildGroupRunHandlers(
             : groupRunMemberKey(groupId, runId, event.taskId, event.agentId)
         if (!completedMemberKeys.has(memberKey)) {
           if (event.taskId === null) {
-            ensureGroupMemberChatRunMessage(group, runId, event.agentId)
+            const submitted = memberChatSubmittedText(event.event)
+            if (submitted) {
+              memberTexts.set(memberKey, submitted)
+              upsertGroupMemberChatText(group, runId, event.agentId, submitted, memberChatTextIds)
+            } else if (
+              event.event.type === 'error' &&
+              event.event.fatal &&
+              !memberTexts.get(memberKey)
+            ) {
+              appendSystemMessage(key, event.event.message)
+            }
           } else {
             ensureGroupMemberRunMessage(group, runId, event.taskId, event.agentId)
-          }
-          syncRunMessage(memberKey, event.event)
-          if (event.event.type === 'done') completedMemberKeys.add(memberKey)
-          if (event.event.type === 'text') {
-            const existingText = memberTexts.get(memberKey)
-            const nextText = existingText
-              ? `${existingText}\n\n${event.event.text}`
-              : event.event.text
-            memberTexts.set(memberKey, nextText)
-            updateAgentRunText(memberKey, nextText)
-          } else if (
-            event.event.type === 'error' &&
-            event.event.fatal &&
-            !memberTexts.get(memberKey)
-          ) {
-            appendSystemMessage(key, event.event.message)
+            syncRunMessage(memberKey, event.event)
+            if (event.event.type === 'done') completedMemberKeys.add(memberKey)
+            if (event.event.type === 'text') {
+              const existingText = memberTexts.get(memberKey)
+              const nextText = existingText
+                ? `${existingText}\n\n${event.event.text}`
+                : event.event.text
+              memberTexts.set(memberKey, nextText)
+              updateAgentRunText(memberKey, nextText)
+            } else if (
+              event.event.type === 'error' &&
+              event.event.fatal &&
+              !memberTexts.get(memberKey)
+            ) {
+              appendSystemMessage(key, event.event.message)
+            }
           }
         }
       } else if (event.type === 'orchestrator_report') {
@@ -2605,12 +2638,47 @@ function onCancelReply(): void {
   pendingReply.value = null
 }
 
+watch(
+  [chats, chatsLoading],
+  () => {
+    setWorkspaceSessions(chats.value, chatsLoading.value)
+  },
+  { immediate: true }
+)
+
+watch(
+  () => workspaceState.createChatSignal,
+  (value, previous) => {
+    if (value > 0 && value !== previous) void openCreateChatDialog()
+  }
+)
+
+watch(
+  () => workspaceState.createGroupSignal,
+  (value, previous) => {
+    if (value > 0 && value !== previous) openCreateGroupDialog()
+  }
+)
+
 onMounted(() => {
+  registerWorkspaceHandlers({
+    select: (key) => {
+      void selectChat(key)
+    },
+    pin: (session) => {
+      void toggleChatPinned(session)
+    },
+    archive: (session) => {
+      void toggleChatArchived(session)
+    },
+    delete: requestDeleteChat
+  })
   normalizePaneWidths()
   window.addEventListener('resize', normalizePaneWidths)
   void loadWorkspace()
 })
 onUnmounted(() => {
+  registerWorkspaceHandlers(null)
   window.removeEventListener('resize', normalizePaneWidths)
   stopPaneResize()
   releaseAllAttachmentPreviewUrls()
@@ -2621,90 +2689,92 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="flex flex-1 h-full min-w-0">
-    <ChatList
-      :style="{ width: `${chatListWidth}px` }"
-      :chats="chats"
-      :active-chat-id="activeSessionKey"
-      :loading="chatsLoading"
-      @search="chatSearchQuery = $event"
-      @select="selectChat"
-      @create-chat="openCreateChatDialog"
-      @create-group-chat="openCreateGroupDialog"
-      @toggle-pin="toggleChatPinned"
-      @toggle-archive="toggleChatArchived"
-      @delete-chat="requestDeleteChat"
-    />
-    <div class="relative z-20 h-full w-0 flex-shrink-0">
-      <div
-        class="absolute inset-y-0 -left-1 w-2 cursor-col-resize bg-transparent"
-        role="separator"
-        aria-label="调整聊天列表宽度"
-        aria-orientation="vertical"
-        @pointerdown="startPaneResize('chat-list', $event)"
-        @dragstart.prevent
-      ></div>
-    </div>
-    <main class="flex-1 flex flex-col h-full bg-surface min-w-0 relative">
+  <div class="flex h-full min-w-0 flex-1">
+    <main class="relative flex h-full min-w-0 flex-1 flex-col bg-background">
       <ChatHeader :detail="chatDetail" />
-      <PinnedBar
-        :messages="messages"
-        :to-text="messageToPlainText"
-        :sender-name="messageSenderName"
-        @unpin="onUnpinFromBar"
-        @jump="onJumpToMessage"
-      />
-      <MessageList
-        ref="messageListRef"
-        :messages="messages"
-        :loading="messagesLoading"
-        :mention-targets="activeMentionTargets"
-        :mention-disabled="streaming || activeArchived"
-        :interaction-disabled="activeArchived"
-        :regenerate-enabled="!!activeChat"
-        :regenerate-disabled="streaming || activeArchived"
-        @select-option="onSelectOption"
-        @reply-option="onReplyOption"
-        @submit-question="onSubmitQuestion"
-        @pin-message="onPinMessage"
-        @copy-message="onCopyMessage"
-        @reply-message="onReplyMessage"
-        @regenerate-message="onRegenerateMessage"
-        @mention-sender="onMentionSender"
-        @preview-artifact="openArtifactPreview"
-        @edit-artifact="openArtifactEditor"
-        @run-deployment="runDeployment"
-      />
-      <WorkspaceDiffPanel
-        class="mx-4"
-        :diff="activeWorkspaceDiff"
-        :loading="workspaceDiffLoading"
-        :error="workspaceDiffError"
-        :committing="workspaceDiffCommitting"
-        :disabled="streaming || activeArchived"
-        @refresh="refreshActiveWorkspaceDiff"
-        @commit="commitActiveWorkspaceDiff"
-      />
-      <MessageInput
-        ref="messageInputRef"
-        :reply-to="pendingReply"
-        :disabled="streaming || !activeSessionKey || activeArchived"
-        :disabled-reason="activeInputDisabledReason"
-        :streaming="streaming"
-        :mention-targets="activeMentionTargets"
-        :attachments-enabled="!!activeGroup"
-        @send="sendMessage"
-        @cancel-reply="onCancelReply"
-        @stop="stopCurrentTurn"
-      />
+      <template v-if="activeSessionKey">
+        <PinnedBar
+          :messages="messages"
+          :to-text="messageToPlainText"
+          :sender-name="messageSenderName"
+          @unpin="onUnpinFromBar"
+          @jump="onJumpToMessage"
+        />
+        <div class="flex min-h-0 flex-1 flex-col">
+          <div class="relative min-h-0 flex-1">
+            <MessageList
+              ref="messageListRef"
+              :messages="messages"
+              :loading="messagesLoading"
+              :mention-targets="activeMentionTargets"
+              :mention-disabled="streaming || activeArchived"
+              :interaction-disabled="activeArchived"
+              :regenerate-enabled="!!activeChat"
+              :regenerate-disabled="streaming || activeArchived"
+              @select-option="onSelectOption"
+              @reply-option="onReplyOption"
+              @submit-question="onSubmitQuestion"
+              @pin-message="onPinMessage"
+              @copy-message="onCopyMessage"
+              @reply-message="onReplyMessage"
+              @regenerate-message="onRegenerateMessage"
+              @mention-sender="onMentionSender"
+              @preview-artifact="openArtifactPreview"
+              @edit-artifact="openArtifactEditor"
+              @run-deployment="runDeployment"
+            />
+          </div>
+          <MessageInput
+            ref="messageInputRef"
+            :reply-to="pendingReply"
+            :disabled="streaming || !activeSessionKey || activeArchived"
+            :disabled-reason="activeInputDisabledReason"
+            :streaming="streaming"
+            :mention-targets="activeMentionTargets"
+            :attachments-enabled="!!activeGroup"
+            @send="sendMessage"
+            @cancel-reply="onCancelReply"
+            @stop="stopCurrentTurn"
+          />
+        </div>
+      </template>
+      <div v-else class="flex flex-1 flex-col items-center justify-center px-8 text-center">
+        <div class="max-w-sm">
+          <div
+            class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-surface-border bg-surface text-text-muted shadow-sm"
+          >
+            <span class="material-symbols-outlined text-3xl">ink_pen</span>
+          </div>
+          <h2 class="text-2xl font-semibold tracking-tight text-text-main">从一条任务开始</h2>
+          <p class="mt-2 text-md leading-6 text-text-muted">
+            选择左侧群聊或单聊，或新建一个会话。中间会像文稿一样记下问题和交付。
+          </p>
+          <div class="mt-5 flex items-center justify-center gap-2">
+            <button
+              type="button"
+              class="h-9 rounded-md bg-text-main px-4 text-sm font-medium text-white transition-colors hover:bg-gray-600"
+              @click="openCreateChatDialog"
+            >
+              新建单聊
+            </button>
+            <button
+              type="button"
+              class="h-9 rounded-md border border-surface-border bg-surface px-4 text-sm font-medium text-text-main transition-colors hover:bg-surface-hover"
+              @click="openCreateGroupDialog"
+            >
+              新建群聊
+            </button>
+          </div>
+        </div>
+      </div>
     </main>
-    <div class="relative z-20 h-full w-0 flex-shrink-0">
+    <div v-if="activeSessionKey" class="relative z-20 h-full w-0 flex-shrink-0">
       <div
         class="absolute inset-y-0 -left-1 w-2 cursor-col-resize bg-transparent"
         role="separator"
         aria-label="调整状态工作区宽度"
         aria-orientation="vertical"
-        @pointerdown="startPaneResize('inspector', $event)"
+        @pointerdown="startPaneResize"
         @dragstart.prevent
       ></div>
     </div>
@@ -2714,14 +2784,29 @@ onUnmounted(() => {
       :group="activeGroup"
       :blackboard="activeGroupBlackboard"
       mode="inspector"
+      :diff="activeWorkspaceDiff"
+      :diff-loading="workspaceDiffLoading"
+      :diff-error="workspaceDiffError"
+      :diff-committing="workspaceDiffCommitting"
+      :diff-disabled="streaming || activeArchived"
       @open-artifact="previewArtifact = $event"
+      @refresh-diff="refreshActiveWorkspaceDiff"
+      @commit-diff="commitActiveWorkspaceDiff"
     />
     <RightInspector
-      v-else
+      v-else-if="activeChat"
       :style="{ width: `${inspectorWidth}px` }"
-      :network="[]"
       :chat="activeChat"
       :runtime="runtime"
+      :artifacts="activeArtifacts"
+      :diff="activeWorkspaceDiff"
+      :diff-loading="workspaceDiffLoading"
+      :diff-error="workspaceDiffError"
+      :diff-committing="workspaceDiffCommitting"
+      :diff-disabled="streaming || activeArchived"
+      @open-artifact="previewArtifact = $event"
+      @refresh-diff="refreshActiveWorkspaceDiff"
+      @commit-diff="commitActiveWorkspaceDiff"
     />
     <ArtifactPreviewDrawer
       :group-id="activeGroup?.id ?? null"

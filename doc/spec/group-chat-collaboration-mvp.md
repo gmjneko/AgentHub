@@ -265,7 +265,7 @@ POST /group-chats/:id/converse { text, mentions }
 A) orchestrate / multi:
    1. Orchestrator turn（用其 vendor/model + 内置编排 system_prompt + orchestrator_context）
         orchestrator_context = { projectGoal, activeTaskGraph, recentUserIntents, blackboardSummary, memberStatus }
-   2. 产出结构化计划：
+   2. 通过 control MCP 工具 `submit_orchestrator_plan` 产出计划：
         - 简单 → 单个 task 指派给最合适成员
         - 复杂 → 拆成 task_graph（串行：本 spec 即便有 deps 也按拓扑序逐个执行，不并行）
       计划写入 blackboard.task_graph，并以 task-list 消息发到 presentation_log（前端任务面板，只读展示）
@@ -298,7 +298,7 @@ dispatch(groupId, task, mode):
   4. turn 结束后服务端收口：
        - git：对比 worktree diff，识别改动文件 → 更新/新增 blackboard_artifact（version+1, updatedBy/At, status）
        - 合并：worktree 分支合并回主分支（本 spec 串行执行，无并发冲突）
-       - 成员结构化报告 report_completion：{ summary, affected{artifacts,contracts,decisions}, decisions?, memory_candidate? }，其中 summary 是面向用户展示的交付摘要，应覆盖产物、关键能力、验证结果和注意事项。
+       - 成员收尾报告 report_completion：成员调用 `submit_member_report` 提交 { summary, affected{artifacts,contracts,decisions}, decisions?, memory_candidate? }，其中 summary 是面向用户展示的交付摘要，应覆盖产物、关键能力、验证结果和注意事项。
             · 若 affected.contracts 命中非本成员 owner 且 approvalRequired → 拒绝该项写入，记 system 提示并上报 Orchestrator（最小升级）
             · 合法 decisions 写入黑板（带 supersedes 使旧决策 superseded）
             · memory_candidate 经 AgentMemoryService 去重后写入 agent_memory_item
@@ -373,9 +373,9 @@ dispatch(groupId, task, mode):
 
 > 本节在编码完成后补记（spec-kit 阶段 4 回顾），记录实现层面对 spec 的细化与有意偏差。
 
-- **Orchestrator Planner 默认调用大模型**：`OrchestratorExecutor` 接口 + `ORCHESTRATOR_PLANNER` 注入令牌已就位；默认绑定 `LlmOrchestratorPlanner`，使用群聊保存的 vendor/model/provider + 内置 prompt 产 JSON 计划。问候/闲聊/状态询问/澄清讨论等非任务消息可返回 `tasks: []` + `note`，由 Orchestrator 直接回复且不写黑板任务/不派发成员。Orchestrator 不允许代替成员 Agent 发言；当用户需要某个成员本人给出观点或问候、且无需工具/文件产出时，Planner 返回 `memberTurns`，服务端真实调用成员 Agent 做轻量回复；只有需要交付文件、执行命令或写入黑板协作状态时才创建 task。LLM 调用失败、输出 JSON 解析失败或指派给非群成员时，直接按上游错误处理，不静默降级成规则分派。自动化测试可覆盖注入令牌替换为假 Planner，以避免真实 LLM e2e 依赖。
+- **Orchestrator Planner 默认调用大模型**：`OrchestratorExecutor` 接口 + `ORCHESTRATOR_PLANNER` 注入令牌已就位；默认绑定 `LlmOrchestratorPlanner`，使用群聊保存的 vendor/model/provider + 内置 prompt，经 `submit_orchestrator_plan` 提交计划。问候/闲聊/状态询问/澄清讨论等非任务消息可返回 `tasks: []` + `note`，由 Orchestrator 直接回复且不写黑板任务/不派发成员。Orchestrator 不允许代替成员 Agent 发言；当用户需要某个成员本人给出观点或问候、且无需工具/文件产出时，Planner 返回 `memberTurns`，服务端真实调用成员 Agent 做轻量回复；只有需要交付文件、执行命令或写入黑板协作状态时才创建 task。LLM 调用失败、计划解析失败或指派给非群成员时，直接按上游错误处理，不静默降级成规则分派。自动化测试可覆盖注入令牌替换为假 Planner，以避免真实 LLM e2e 依赖。
 - **成员能力摘要**：Agent 新增 `capabilitySummary` 配置字段，群聊成员视图和 Orchestrator prompt 会携带 `agentId/name/roleInGroup/capabilitySummary`，帮助 Orchestrator 在不读取完整 Agent system prompt 的情况下判断该把任务或轻量回复交给谁。
 - **成员 turn 复用方式**：成员 dispatch 未复用单聊 `AgentRuntimeService.startTurn`（其活跃锁/事件流按 session 粒度、且自带独立 turn-stream），而是**复用更底层的适配层**（`createAgent` + `agentToConfig` + `AgentMessageHistoryService.collectStep/saveSteps`）直接驱动成员 turn，事件经 `member_turn_event` 透传到群运行 Stream（`GroupRunStream`，按 `TurnStream` 范式新建、类型为 `GroupRunEvent`、锁粒度为「群」）。成员私有 L1 仍落 `agent_message` / `agent_message_step`。
-- **`report_completion` 落地**：成员不直接写库；turn 末尾输出 `report` JSON 块，dispatch 解析后**基于 git diff 代写黑板产出物**，并据 report 处理 decisions / contracts（owner 校验）/ memory_candidate（去重）。无 report 时回退为「以最终文本为摘要」。
+- **`report_completion` 落地**：成员不直接写库；turn 结束时只解析 `submit_member_report` 的 MCP 载荷，dispatch 解析后**基于 git diff 代写黑板产出物**，并据 report 处理 decisions / contracts（owner 校验）/ memory_candidate（去重）。未调用该工具则该成员任务失败。详见 [`group-control-mcp.md`](./group-control-mcp.md)。
 - **自动化测试范围**：`BlackboardService`（乐观锁 / decision supersede / contract owner 保护）、`AgentMemoryService`（去重 / scope）、`ContextAssembler`（黑板冲突丢弃 / 预算裁剪 / 情况 A）、`MessageRouter`（路由表全分支）、`ContinuityResolver`（A/B/C + 强指代）共 20 条单测，经 `tsx + node:test` 运行（`pnpm -F @agenthub/server test`）。**建群 + 单 @ 直派的端到端 happy path 依赖在线 MySQL + Redis + 真实 Agent SDK/LLM**，本轮以单元级管线 + 手动验证覆盖，未纳入自动化 CI e2e（与 spec「不强制真实 LLM e2e」一致）。
 - **共享工作区 git 操作**：经 `node:child_process` 调用系统 `git`（`init -b main` / `worktree add` / `merge --no-ff` / `diff`），无第三方 git 库依赖。建群写 `ACTIVE=true`；删除群聊只写 `ACTIVE=false`，不删除共享仓库、默认分配目录、worktree/member home 等任何目录。

@@ -431,14 +431,14 @@ src/multiagents/group/
 | PUT        | `/api/group-chats/:id/blackboard/artifacts/:artifactId/content` | 保存黑板产出物对应 text/html 文件内容；运行中拒绝写回并在成功后更新 artifact 版本                   |
 | GET        | `/api/group-chats/:id/blackboard/events`                        | 黑板事件流（审计/调试，分页）                                                                      |
 
-> 协作动作（`dispatch_agent` / `report_completion` / `blackboard_write`）是**服务端内部协议**，不暴露为用户 REST：成员输出结构化 `report`，服务端基于 git diff 代写黑板。
+> 协作动作（`dispatch_agent` / `report_completion` / `blackboard_write`）是**服务端内部协议**，不暴露为用户 REST：成员通过 control MCP 工具 `submit_member_report` 提交报告，服务端基于 git diff 代写黑板。
 
 ### 运行与并发
 
 - 一次群运行 = 一条 Redis Stream（`GroupRunStream`，按单聊 `TurnStream` 范式），成员 turn 事件经 `member_turn_event` 透传，天然多端围观；活跃指针 `SET NX` 做「群」级跨实例互斥（已有活跃轮 → 返回冲突，引导用 `activeRunId` 围观）。
 - 群聊主体保存 `isPinned` 与 `archivedAt`：置顶状态跨端一致；`archivedAt` 非空或 `status=archived` 时群聊只读，服务端拒绝新的 `converse`。
 - 群聊消息保存 `pinned`：它是当前群聊内的固定上下文，不跨群共享；Pin/Unpin 只改消息标注，归档群也允许操作。后续 Orchestrator 决策、成员 task `ContextAssembler`、轻量成员聊天都会注入 `# Pinned messages (群聊内全局上下文)` 摘要块。
-- 成员干活复用单聊适配层（`createAgent` + `agentToConfig`）和 `scope=group` 的成员内部 `AgentSession`，`workingDirectory` 指向该任务的 git worktree；私有 L1 落 `agent_message` / `agent_message_step`，但不会进入 `/agent-chats` 单聊列表。轻量成员聊天（例如打招呼、给一句观点）走 `memberTurns`，真实调用成员 Agent，但不创建黑板 task、不建 worktree、不做 report/diff。
+- 成员干活复用单聊适配层（`createAgent` + `agentToConfig`）和 `scope=group` 的成员内部 `AgentSession`，`workingDirectory` 指向该任务的 git worktree；私有 L1 落 `agent_message` / `agent_message_step`，但不会进入 `/agent-chats` 单聊列表。轻量成员聊天（例如打招呼、给一句观点）走 `memberTurns`，真实调用成员 Agent，但不创建黑板 task、不建 worktree、不做 report/diff；展示与落库只认 `submit_member_chat`，某个成员未提交时不中断其余成员。
 - 成员 task 成功返回后，会先经过隐藏交接判断（不写展示消息、不推 `orchestrator_report`）：该判断使用无状态 `ChatClient`，不会复用或污染 `group_chat.orchestratorSessionId`，并会携带成员 `roleInGroup` / `capabilitySummary`、Orchestrator 分配的任务目标、成员最终输出和直接下游任务。若成员实际是在用普通文本向用户澄清/提问，即使没有按 `report.awaiting_user_input` 格式声明，也会把该 task 标为 `waiting_input`，下游 task 不启动，群运行静默等待用户回复。
 - 多阶段任务会在每阶段 task graph 全部完成后做有限续编排：服务端把阶段结果交回 Orchestrator 判断原始需求是否已真正交付；若前一阶段只是 PRD/方案/调研，会继续派发实现/验证等下游任务，避免前置规划完成后提前收尾。
 - 最终汇报默认先调用 Orchestrator 最终审查器，读取黑板摘要与可安全预览的文本/HTML 产物，对照原始需求和任务状态确认完成、失败、阻塞或等待输入；只有审查器调用失败时才退回模板拼接。全成功但审查发现缺口时，会继续派发后续任务，直到审查通过或达到续编排上限。
@@ -449,7 +449,7 @@ src/multiagents/group/
 
 ### Orchestrator Planner
 
-`OrchestratorExecutor` 可注入（`ORCHESTRATOR_PLANNER` 令牌）。默认使用 `LlmOrchestratorPlanner`，按群聊保存的 vendor/model/provider + 内置 prompt 产 JSON 计划；Orchestrator 自身会把 Claude Code/Codex SDK 会话 id 持久化到内部字段 `group_chat.orchestratorSessionId`，后续群运行用 `resumeWith()` 恢复同一编排会话，因此可接住「上一轮追问、下一轮短答」这类连续对话。问候/闲聊/状态询问/澄清讨论等非任务消息可返回 `tasks: []` + `note`，由 Orchestrator 直接回复且不写黑板任务/不派发成员。续编排检查中的 `tasks: []` 只表示后续工作已结束，不会额外发 Orchestrator 文本，最终由最终审查器验收并统一收尾。Orchestrator 不允许代替成员 Agent 发言；当用户需要某个成员本人给出观点或问候、且无需工具/文件产出时，Planner 返回 `memberTurns`，服务端真实调用成员 Agent 做轻量回复；只有需要交付文件、执行命令或写入黑板协作状态时才创建 task。Planner 还可返回 `contextUpdates`，服务端会把已确认的项目目标/技术栈/阶段写回 `projectMeta`，把明确的用户选择写成已批准黑板决策。LLM 调用失败或输出非法时如实返回上游错误，不静默降级成规则分派。测试场景可覆盖该 token 注入假 Planner / 假最终审查器 / 假交接审查器。
+`OrchestratorExecutor` 可注入（`ORCHESTRATOR_PLANNER` 令牌）。默认使用 `LlmOrchestratorPlanner`，按群聊保存的 vendor/model/provider + 内置 prompt，通过 control MCP 工具 `submit_orchestrator_plan` 提交计划；Orchestrator 自身会把 Claude Code/Codex SDK 会话 id 持久化到内部字段 `group_chat.orchestratorSessionId`，后续群运行用 `resumeWith()` 恢复同一编排会话，因此可接住「上一轮追问、下一轮短答」这类连续对话。问候/闲聊/状态询问/澄清讨论等非任务消息可返回 `tasks: []` + `note`，由 Orchestrator 直接回复且不写黑板任务/不派发成员。续编排检查中的 `tasks: []` 只表示后续工作已结束，不会额外发 Orchestrator 文本，最终由最终审查器验收并统一收尾。Orchestrator 不允许代替成员 Agent 发言；当用户需要某个成员本人给出观点或问候、且无需工具/文件产出时，Planner 返回 `memberTurns`，服务端真实调用成员 Agent 做轻量回复；只有需要交付文件、执行命令或写入黑板协作状态时才创建 task。Planner 还可返回 `contextUpdates`，服务端会把已确认的项目目标/技术栈/阶段写回 `projectMeta`，把明确的用户选择写成已批准黑板决策。LLM 调用失败或输出非法时如实返回上游错误，不静默降级成规则分派。测试场景可覆盖该 token 注入假 Planner / 假最终审查器 / 假交接审查器。最终审查走 `submit_final_review`，轻量成员回复走 `submit_member_chat`。宿主控制面 MCP 实现见 `@agenthub/agent-core` 的 `control-mcp`。
 
 ### 数据库与测试
 
