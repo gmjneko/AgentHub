@@ -2768,46 +2768,54 @@ onUnmounted(() => {
         </div>
       </div>
     </main>
-    <div v-if="activeSessionKey" class="relative z-20 h-full w-0 flex-shrink-0">
+    <aside
+      v-if="activeSessionKey && (activeGroup || activeChat)"
+      class="relative z-20 flex h-full shrink-0 flex-col py-3 pr-3 pl-1"
+      :style="{ width: `${inspectorWidth}px` }"
+    >
       <div
-        class="absolute inset-y-0 -left-1 w-2 cursor-col-resize bg-transparent"
+        class="absolute inset-y-3 left-0 z-20 w-2 cursor-col-resize bg-transparent"
         role="separator"
         aria-label="调整状态工作区宽度"
         aria-orientation="vertical"
         @pointerdown="startPaneResize"
         @dragstart.prevent
       ></div>
-    </div>
-    <GroupDetailPanel
-      v-if="activeGroup"
-      :style="{ width: `${inspectorWidth}px` }"
-      :group="activeGroup"
-      :blackboard="activeGroupBlackboard"
-      mode="inspector"
-      :diff="activeWorkspaceDiff"
-      :diff-loading="workspaceDiffLoading"
-      :diff-error="workspaceDiffError"
-      :diff-committing="workspaceDiffCommitting"
-      :diff-disabled="streaming || activeArchived"
-      @open-artifact="previewArtifact = $event"
-      @refresh-diff="refreshActiveWorkspaceDiff"
-      @commit-diff="commitActiveWorkspaceDiff"
-    />
-    <RightInspector
-      v-else-if="activeChat"
-      :style="{ width: `${inspectorWidth}px` }"
-      :chat="activeChat"
-      :runtime="runtime"
-      :artifacts="activeArtifacts"
-      :diff="activeWorkspaceDiff"
-      :diff-loading="workspaceDiffLoading"
-      :diff-error="workspaceDiffError"
-      :diff-committing="workspaceDiffCommitting"
-      :diff-disabled="streaming || activeArchived"
-      @open-artifact="previewArtifact = $event"
-      @refresh-diff="refreshActiveWorkspaceDiff"
-      @commit-diff="commitActiveWorkspaceDiff"
-    />
+      <div
+        class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-surface-border bg-surface shadow-lg"
+      >
+        <GroupDetailPanel
+          v-if="activeGroup"
+          class="min-h-0 min-w-0 flex-1"
+          :group="activeGroup"
+          :blackboard="activeGroupBlackboard"
+          mode="inspector"
+          :diff="activeWorkspaceDiff"
+          :diff-loading="workspaceDiffLoading"
+          :diff-error="workspaceDiffError"
+          :diff-committing="workspaceDiffCommitting"
+          :diff-disabled="streaming || activeArchived"
+          @open-artifact="previewArtifact = $event"
+          @refresh-diff="refreshActiveWorkspaceDiff"
+          @commit-diff="commitActiveWorkspaceDiff"
+        />
+        <RightInspector
+          v-else
+          class="min-h-0 min-w-0 flex-1"
+          :chat="activeChat"
+          :runtime="runtime"
+          :artifacts="activeArtifacts"
+          :diff="activeWorkspaceDiff"
+          :diff-loading="workspaceDiffLoading"
+          :diff-error="workspaceDiffError"
+          :diff-committing="workspaceDiffCommitting"
+          :diff-disabled="streaming || activeArchived"
+          @open-artifact="previewArtifact = $event"
+          @refresh-diff="refreshActiveWorkspaceDiff"
+          @commit-diff="commitActiveWorkspaceDiff"
+        />
+      </div>
+    </aside>
     <ArtifactPreviewDrawer
       :group-id="activeGroup?.id ?? null"
       :chat-id="activeGroup ? null : (activeChat?.id ?? null)"

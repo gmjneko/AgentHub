@@ -61,9 +61,7 @@ function todoLabel(status: AgentTodoItem['status']): string {
 </script>
 
 <template>
-  <aside
-    class="z-10 flex h-full flex-shrink-0 flex-col border-l border-surface-border bg-surface"
-  >
+  <aside class="flex h-full min-h-0 min-w-0 flex-col bg-surface">
     <div class="flex-1 overflow-y-auto">
       <InspectorSection title="环境信息" icon="folder">
         <template v-if="chat">

@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { BlackboardArtifact, BlackboardView } from '../api'
-import { shouldShowBlackboardArtifact } from '../utils/blackboard'
+import {
+  decisionStatusLabel,
+  decisionStatusTone,
+  shouldShowBlackboardArtifact
+} from '../utils/blackboard'
 
 const props = defineProps<{ blackboard: BlackboardView | null; loading?: boolean }>()
 const emit = defineEmits<{
@@ -80,21 +84,22 @@ const visibleArtifacts = computed(
         <section>
           <h4 class="mb-2 text-sm font-semibold text-text-muted">决策</h4>
           <p v-if="blackboard.decisions.length === 0" class="text-sm text-gray-400">暂无决策</p>
-          <ul v-else class="space-y-1.5">
-            <li
+          <div v-else class="flex flex-wrap gap-1.5">
+            <span
               v-for="d in blackboard.decisions"
               :key="d.id"
-              class="rounded-md bg-surface-hover px-2.5 py-1.5"
+              class="inline-flex max-w-full items-start gap-1.5 rounded-md bg-surface-hover px-2 py-1 text-xs leading-5 text-text-main"
+              :class="d.status === 'superseded' ? 'line-through opacity-60' : ''"
             >
-              <p
-                class="text-base text-text-main"
-                :class="d.status === 'superseded' ? 'line-through opacity-60' : ''"
+              <span class="min-w-0 line-clamp-2 break-words">{{ d.content }}</span>
+              <span
+                class="mt-0.5 shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium no-underline"
+                :class="decisionStatusTone(d.status)"
               >
-                {{ d.content }}
-              </p>
-              <span class="text-xs text-text-muted">{{ d.status }}</span>
-            </li>
-          </ul>
+                {{ decisionStatusLabel(d.status) }}
+              </span>
+            </span>
+          </div>
         </section>
 
         <!-- Contracts -->

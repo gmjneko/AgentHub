@@ -8,7 +8,11 @@ import type {
   GroupMemberView,
   WorkspaceDiffSummary
 } from '../api'
-import { shouldShowBlackboardArtifact } from '../utils/blackboard'
+import {
+  decisionStatusLabel,
+  decisionStatusTone,
+  shouldShowBlackboardArtifact
+} from '../utils/blackboard'
 import { vendorLabel } from '../utils/vendor'
 import AgentAvatar from './AgentAvatar.vue'
 import GroupAvatar from './GroupAvatar.vue'
@@ -71,7 +75,7 @@ const visibleArtifacts = computed(
 <template>
   <main
     class="flex min-w-0 flex-col bg-surface"
-    :class="isInspector ? 'flex-shrink-0 border-l border-surface-border' : 'flex-1'"
+    :class="isInspector ? 'h-full min-h-0 flex-1' : 'flex-1'"
   >
     <template v-if="loading">
       <div class="flex flex-1 items-center justify-center text-text-muted">正在加载群聊资料…</div>
@@ -206,9 +210,20 @@ const visibleArtifacts = computed(
           </div>
           <div v-if="blackboard?.decisions.length" class="mt-4">
             <div class="mb-2 text-xs font-semibold text-text-muted">决策</div>
-            <div v-for="decision in blackboard.decisions" :key="decision.id" class="mb-2">
-              <p class="line-clamp-2 text-sm text-text-main">{{ decision.content }}</p>
-              <div class="mt-0.5 text-xs text-text-muted">{{ decision.status }}</div>
+            <div class="flex flex-wrap gap-1.5">
+              <span
+                v-for="decision in blackboard.decisions"
+                :key="decision.id"
+                class="inline-flex max-w-full items-start gap-1.5 rounded-md bg-surface-hover px-2 py-1 text-xs leading-5 text-text-main"
+              >
+                <span class="min-w-0 line-clamp-2 break-words">{{ decision.content }}</span>
+                <span
+                  class="mt-0.5 shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium"
+                  :class="decisionStatusTone(decision.status)"
+                >
+                  {{ decisionStatusLabel(decision.status) }}
+                </span>
+              </span>
             </div>
           </div>
         </InspectorSection>
@@ -397,11 +412,20 @@ const visibleArtifacts = computed(
               >
                 暂无决策
               </p>
-              <div v-else class="space-y-2">
-                <div v-for="decision in blackboard.decisions" :key="decision.id">
-                  <p class="line-clamp-2 text-sm text-text-main">{{ decision.content }}</p>
-                  <div class="mt-0.5 text-xs text-text-muted">{{ decision.status }}</div>
-                </div>
+              <div v-else class="flex flex-wrap gap-1.5">
+                <span
+                  v-for="decision in blackboard.decisions"
+                  :key="decision.id"
+                  class="inline-flex max-w-full items-start gap-1.5 rounded-md bg-surface-hover px-2 py-1 text-xs leading-5 text-text-main"
+                >
+                  <span class="min-w-0 line-clamp-2 break-words">{{ decision.content }}</span>
+                  <span
+                    class="mt-0.5 shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium"
+                    :class="decisionStatusTone(decision.status)"
+                  >
+                    {{ decisionStatusLabel(decision.status) }}
+                  </span>
+                </span>
               </div>
             </section>
 
