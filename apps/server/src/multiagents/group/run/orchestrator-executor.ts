@@ -3,6 +3,7 @@ import type { BlackboardTaskNode, GroupRouteKind, ProjectStatus } from '@agenthu
 import {
     applyControlMcpConfig,
     createAgent,
+    parseControlMcpToolName,
     withControlMcp,
     type AgentAdapter,
     type AgentAdapterConfig,
@@ -14,6 +15,7 @@ import { BusinessException } from '../../../common/index.js'
 import { GroupWorkspaceService } from '../group-workspace.service.js'
 import type { GroupChat } from '../entities/group-chat.entity.js'
 import { GroupDebugLogger } from '../debug/group-debug-logger.service.js'
+import { OrchestratorMailboxService, normalizeMailboxQuestions } from './orchestrator-mailbox.service.js'
 
 /** DI token：可注入的编排计划生成器 */
 export const ORCHESTRATOR_PLANNER = Symbol('ORCHESTRATOR_PLANNER')
@@ -86,10 +88,34 @@ export interface DecisionRequest {
     routeKind: GroupRouteKind
     mentionedAgentIds: string[]
     context: OrchestratorContext
+    runId?: string
+    signal?: AbortSignal
 }
 
 export interface OrchestratorExecutor {
     decide(req: DecisionRequest): Promise<OrchestratorDecision>
+}
+
+/** Prefer a cancelled-then-downgraded plan that still has tasks/memberTurns. */
+export function preferActionableOrchestratorPlan(
+    events: Iterable<AgentEvent>
+): { tool: 'submit_orchestrator_plan'; payload: Record<string, unknown> } | null {
+    const plans: Record<string, unknown>[] = []
+    for (const ev of events) {
+        if (ev.type !== 'tool_use') continue
+        const tool = parseControlMcpToolName(ev.mcp?.tool ?? ev.name)
+        if (tool !== 'submit_orchestrator_plan') continue
+        if (!ev.input || typeof ev.input !== 'object' || Array.isArray(ev.input)) continue
+        plans.push(ev.input as Record<string, unknown>)
+    }
+    if (plans.length === 0) return null
+    const actionable = plans.filter((plan) => {
+        const tasks = plan.tasks
+        const turns = plan.memberTurns
+        return (Array.isArray(tasks) && tasks.length > 0) || (Array.isArray(turns) && turns.length > 0)
+    })
+    const chosen = actionable.at(-1) ?? plans.at(-1)
+    return chosen ? { tool: 'submit_orchestrator_plan', payload: chosen } : null
 }
 
 interface OrchestratorRunResult {
@@ -97,6 +123,7 @@ interface OrchestratorRunResult {
     success: boolean
     error?: string
     submission?: unknown
+    submissionTool?: string
     sessionId?: string | null
 }
 
@@ -116,7 +143,8 @@ export const ORCHESTRATOR_SYSTEM_PROMPT = `你是 AgentHub 群聊的 Orchestrato
 
 # 三种输出模式（互斥，本轮只能选其一）
 1. 直接回复（noop）：问候、感谢、闲聊、状态询问、对你提问的澄清或方案讨论等，无需成员执行工具或产出文件——返回 tasks:[]，用 note 以 Orchestrator 身份给出完整自然语言回复。note 即用户看到的正文，可以是多句，不必压缩成一句。
-2. 成员轻量发言（memberTurns）：用户要某些成员以其角色打招呼/自我介绍/表达观点，或解答一个无需读写文件、无需工具的问题——返回 tasks:[] + memberTurns，让成员真实轻量回复；note 用一句话说明你为何这样安排。
+2. 成员轻量发言（memberTurns）：用户要某些成员以其角色打招呼/自我介绍/表达观点、**向用户提问**，或解答一个无需读写文件、无需工具的问题——返回 tasks:[] + memberTurns，让成员真实轻量回复；note 只用一句话说明你为何这样安排。
+  **禁止**用 note 承诺「我让某某去问/去说」却不写 memberTurns。成员身份的提问必须由该成员自己的 turn 发出。
 3. 任务派发（tasks）：用户要求创建/修改文件、实现功能、产出文档、执行命令、探索/检查/读取工作区，或任何需要工具或可交付产出的事项——返回 tasks。
   > 在给成员派发任务的时候，**必须明确写出**该成员的**角色与任务**，以及**任务执行的边界**，避免成员做了不符合他自己角色的事情。
 
@@ -124,7 +152,7 @@ export const ORCHESTRATOR_SYSTEM_PROMPT = `你是 AgentHub 群聊的 Orchestrato
 - 你绝不亲自写代码或产出物，也绝不自己调用工具读写文件；凡需这些，一律拆成 task 派给成员。
 - 用户要求“探索/检查/读取/查看工作区”，或在你说明要探索/执行后继续催促“那你探索啊/继续/开始做”——必须创建成员 task，不要当成澄清或 noop，也不要自己尝试调用工具。
 - 一个问题若需要读取文件、检查工作区或形成可交付回答 → 用 tasks；若只需角色判断、方案建议、信息整理且无需工具与文件 → 用 memberTurns。
-- 不允许代替成员 Agent 发言：成员身份的消息只能来自真实派发并完成的成员 turn。
+- 不允许代替成员 Agent 发言：成员身份的消息只能来自真实派发并完成的成员 turn。用户说「让产品经理问几个问题」这类请求必须走 memberTurns，不能只回一句「我让他去问」。
 - 面向黑板协作，不臆造未提供的事实；只能指派给给定的成员 Agent（用其 agentId）。
 
 # 路由来源 routeKind 与被提及成员
@@ -142,8 +170,12 @@ export const ORCHESTRATOR_SYSTEM_PROMPT = `你是 AgentHub 群聊的 Orchestrato
 - deps 只能引用本次 tasks 数组中已定义的 key，绝不引用不存在的 key（否则该任务会永久卡住）。
 - objective 要自包含、可独立执行：写清该成员本轮要达成的具体目标，而不是简单复述用户原话。
 
+# 向用户提问
+- 若你不确定、需要用户拍板，调用 ask_user（questions 渲染成可点选卡片）。不要只在 note 里提问后假装已有答案。
+- 用户作答后继续调用 submit_orchestrator_plan。
+
 # 输出契约
-- 必须调用 MCP 工具 submit_orchestrator_plan 提交计划，不要只输出 JSON 文本，也不要输出该工具参数以外的解释。
+- 必须调用 MCP 工具 submit_orchestrator_plan 提交计划，或先 ask_user；不要只输出 JSON 文本，也不要输出该工具参数以外的解释。
 - tasks 与 memberTurns 不可同时非空。
 - 参数形如：
   任务：{"tasks":[{"key":"t1","name":"任务名","agentId":"<成员agentId>","deps":[],"objective":"该成员要达成的具体目标以及该成员的职责边界。例如它是前端工程师，那涉及到后端的部分就禁止他去做。并且提醒及时更新需要共享的事实信息。"}],"note":"给用户的说明"}
@@ -166,7 +198,8 @@ export class LlmOrchestratorExecutor implements OrchestratorExecutor {
         private readonly providers: PlatformProviderService,
         private readonly workspace: GroupWorkspaceService,
         private readonly agentWorkspace: AgentWorkspaceService,
-        private readonly debug: GroupDebugLogger
+        private readonly debug: GroupDebugLogger,
+        private readonly mailbox: OrchestratorMailboxService
     ) {}
 
     async decide(req: DecisionRequest): Promise<OrchestratorDecision> {
@@ -220,8 +253,9 @@ export class LlmOrchestratorExecutor implements OrchestratorExecutor {
         )
         await this.agentWorkspace.ensureAgentHomeDirectory(req.group.orchestratorVendor, home)
 
-        // Orchestrator 只提交计划，不该读写真实仓库：cwd 指向 home scratch，
-        // 仅注入 submit_orchestrator_plan MCP；Claude 用 allowedTools 收口，Codex 用 plan 只读沙箱。
+        // Orchestrator 只提交计划，不该读写真实仓库：cwd 指向 home scratch。
+        // 计划回合注入 submit_orchestrator_plan + ask_user。Claude 用 allowedTools 收口。
+        // Codex 用 mailbox 模式（bypassPermissions）：plan 只读沙箱会取消写 sink 的 MCP 调用。
         const config: AgentAdapterConfig = {
             id: `orch-${req.group.id}`,
             model: req.group.orchestratorModel,
@@ -245,21 +279,49 @@ export class LlmOrchestratorExecutor implements OrchestratorExecutor {
             systemPrompt: ORCHESTRATOR_SYSTEM_PROMPT,
             prompt
         })
-        return withControlMcp('submit_orchestrator_plan', undefined, async (control) => {
-            const adapter = this.createOrchestratorAdapter(
-                req,
-                applyControlMcpConfig(config, req.group.orchestratorVendor, control, 'control-only')
-            )
-            const result = await this.sendPlanRequest(adapter, prompt, control)
-            this.debug.log('group.orchestrator_executor.output', {
-                groupId: req.group.id,
-                userId: req.userId,
-                attempt: 'mcp',
-                result
-            })
-            if (result.success) return result
-            throw new Error(result.error ?? 'Orchestrator turn failed')
-        })
+        return withControlMcp(
+            ['submit_orchestrator_plan', 'ask_user'],
+            undefined,
+            async (control) => {
+                const adapter = this.createOrchestratorAdapter(
+                    req,
+                    applyControlMcpConfig(config, req.group.orchestratorVendor, control, 'mailbox')
+                )
+                let nextPrompt = prompt
+                for (let ask = 0; ask < 3; ask += 1) {
+                    const result = await this.sendPlanRequest(adapter, nextPrompt, control)
+                    this.debug.log('group.orchestrator_executor.output', {
+                        groupId: req.group.id,
+                        userId: req.userId,
+                        attempt: ask === 0 ? 'mcp' : `ask_user_${ask}`,
+                        result
+                    })
+                    if (!result.success) throw new Error(result.error ?? 'Orchestrator turn failed')
+                    if (result.submissionTool === 'ask_user') {
+                        if (!req.runId) throw new Error('ask_user requires an active group run')
+                        const payload =
+                            result.submission && typeof result.submission === 'object'
+                                ? (result.submission as Record<string, unknown>)
+                                : {}
+                        const answer = await this.mailbox.askUser({
+                            group: req.group,
+                            userId: req.userId,
+                            runId: req.runId,
+                            taskId: null,
+                            text: typeof payload.text === 'string' && payload.text.trim()
+                                ? payload.text.trim()
+                                : '需要你确认',
+                            questions: normalizeMailboxQuestions(payload.questions),
+                            signal: req.signal ?? new AbortController().signal
+                        })
+                        nextPrompt = `用户对你刚才提问的答复：\n${answer}\n\n请调用 submit_orchestrator_plan 提交计划，或再次 ask_user。`
+                        continue
+                    }
+                    return result
+                }
+                throw new Error('Orchestrator asked the user too many times')
+            }
+        )
     }
 
     private createOrchestratorAdapter(req: DecisionRequest, config: AgentAdapterConfig): AgentAdapter {
@@ -273,7 +335,7 @@ export class LlmOrchestratorExecutor implements OrchestratorExecutor {
     private async sendPlanRequest(
         adapter: AgentAdapter,
         prompt: string,
-        control: { resolve(events: Iterable<AgentEvent>): Promise<{ payload: unknown } | null> }
+        control: { resolve(events: Iterable<AgentEvent>): Promise<{ tool: string; payload: unknown } | null> }
     ): Promise<OrchestratorRunResult> {
         const parts: string[] = []
         const events: AgentEvent[] = []
@@ -291,12 +353,17 @@ export class LlmOrchestratorExecutor implements OrchestratorExecutor {
                 if (ev.finalText) finalFromDone = ev.finalText
             }
         }
-        const submission = await control.resolve(events)
+        const resolved = await control.resolve(events)
+        const submission =
+            resolved?.tool === 'ask_user'
+                ? resolved
+                : (preferActionableOrchestratorPlan(events) ?? resolved)
         return {
             text: this.combineTextParts(parts, finalFromDone),
             success,
             error,
             submission: submission?.payload,
+            submissionTool: submission?.tool,
             sessionId: adapter.sessionId
         }
     }

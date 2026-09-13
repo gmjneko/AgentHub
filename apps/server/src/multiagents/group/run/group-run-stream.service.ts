@@ -8,7 +8,7 @@ import { MemoryRunStream } from '../../../redis/memory-run-stream.js'
  * GroupRunStream — 一次群运行（group run）的事件广播与回放底层，按 REDIS_ENABLED 使用 Redis Streams 或本机内存。
  *
  * 沿用单聊 TurnStream 范式，但：
- * - 事件类型是 `GroupRunEvent`（编排计划 / 任务状态 / 成员 turn 透传 / 黑板更新 / 汇报 / done）；
+ * - 事件类型是 `GroupRunEvent`（编排计划 / 任务状态 / 成员 turn 透传 / 编排器邮箱回合 / 黑板更新 / 汇报 / done）；
  * - 活跃指针锁的粒度是「群」而非「会话」——一个群同时只允许一轮在跑。
  *
  * 一次群运行 = 一条 Redis Stream（`group:run:{runId}:events`）。任意数量订阅者各自

@@ -4,9 +4,11 @@ import { BusinessException } from '../../../common/index.js'
 import type { GroupChat } from '../entities/group-chat.entity.js'
 import {
     LlmOrchestratorExecutor,
+    preferActionableOrchestratorPlan,
     type OrchestratorDecision,
     type DecisionRequest
 } from './orchestrator-executor.js'
+import type { AgentEvent } from '../../adapter/index.js'
 
 interface StubRunResult {
     text: string
@@ -21,7 +23,8 @@ function createPlanner(result: StubRunResult): LlmOrchestratorExecutor {
         {} as never,
         {} as never,
         {} as never,
-        { log: () => undefined } as never
+        { log: () => undefined } as never,
+        {} as never
     )
     Object.defineProperty(planner, 'runOrchestrator', {
         value: async () => result
@@ -81,6 +84,43 @@ test('LlmOrchestratorPlanner ignores raw SDK text when MCP submission is availab
     assert.equal(plan.note, note)
     assert.equal(plan.displayText, undefined)
     assert.equal(plan.orchestratorSessionId, 'sdk-session-1')
+})
+
+test('preferActionableOrchestratorPlan keeps memberTurns after a later empty note', () => {
+    const events: AgentEvent[] = [
+        {
+            type: 'tool_use',
+            vendor: 'codex',
+            id: '1',
+            name: 'mcp:agenthub_control/submit_orchestrator_plan',
+            input: {
+                tasks: [],
+                note: '请产品经理提问',
+                memberTurns: [
+                    {
+                        agentId: 'pm-1',
+                        instruction: '向用户提几个关键问题'
+                    }
+                ]
+            },
+            status: 'failed',
+            kind: 'mcp',
+            mcp: { server: 'agenthub_control', tool: 'submit_orchestrator_plan' }
+        },
+        {
+            type: 'tool_use',
+            vendor: 'codex',
+            id: '2',
+            name: 'mcp:agenthub_control/submit_orchestrator_plan',
+            input: { tasks: [], note: '我让产品经理去问你。' },
+            status: 'completed',
+            kind: 'mcp',
+            mcp: { server: 'agenthub_control', tool: 'submit_orchestrator_plan' }
+        }
+    ]
+    const chosen = preferActionableOrchestratorPlan(events)
+    assert.equal(Array.isArray(chosen?.payload.memberTurns), true)
+    assert.equal((chosen?.payload.memberTurns as { agentId: string }[])[0]?.agentId, 'pm-1')
 })
 
 test('LlmOrchestratorPlanner rejects text JSON when MCP submission is missing', async () => {

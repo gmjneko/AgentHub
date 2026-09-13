@@ -204,7 +204,8 @@ test('group orchestrator, task context, and lightweight member chat include pinn
         {} as never,
         {} as never,
         {} as never,
-        { log: () => undefined } as never
+        { log: () => undefined } as never,
+        {} as never
     ) as unknown as {
         buildPrompt(req: DecisionRequest): string
     }
@@ -255,5 +256,7 @@ test('group orchestrator, task context, and lightweight member chat include pinn
     assert.equal(memberPrompt.includes('全局约束：只改前端'), true)
     assert.equal(memberPrompt.includes('说一句建议'), true)
     assert.equal(memberPrompt.includes('submit_member_chat'), true)
+    assert.equal(memberPrompt.includes('report_for_orchestrator'), true)
+    assert.equal(memberPrompt.includes('questions'), false)
     assert.equal(memberPrompt.includes('不要使用工具'), false)
 })

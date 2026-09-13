@@ -11,7 +11,7 @@ packages/agent-core/
 └── src/
     ├── index.ts                       # barrel：重导出 adapters、control-mcp、WorkspaceGit、artifact preview/writeback
     ├── logger.ts                       # 极简 CoreLogger 接口 + no-op 默认实现
-    ├── control-mcp/                   # 群聊宿主控制面 MCP（计划/验收/成员回复/收尾报告）
+    ├── control-mcp/                   # 群聊宿主控制面 MCP（计划/验收/成员回复/收尾报告/编排器邮箱）
     ├── adapter/
     │   ├── types.ts                    # 统一 AgentEvent / AgentAdapter / 配置 / 能力类型
     │   ├── capabilities.ts             # 各 vendor 能力描述（单一事实源）

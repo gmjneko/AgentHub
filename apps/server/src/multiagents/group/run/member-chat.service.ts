@@ -9,7 +9,8 @@ import {
     applyControlMcpConfig,
     createAgent,
     withControlMcp,
-    type AgentEvent
+    type AgentEvent,
+    type ControlMcpSession
 } from '../../adapter/index.js'
 import { Agent } from '../../entities/agent.entity.js'
 import { AgentSession } from '../../entities/agent-session.entity.js'
@@ -24,6 +25,7 @@ import { GroupChat } from '../entities/group-chat.entity.js'
 import { GroupChatMember } from '../entities/group-chat-member.entity.js'
 import { GroupRunStream } from './group-run-stream.service.js'
 import { GroupDebugLogger } from '../debug/group-debug-logger.service.js'
+import { OrchestratorMailboxService } from './orchestrator-mailbox.service.js'
 
 export interface MemberChatParams {
     group: GroupChat
@@ -40,7 +42,7 @@ export interface MemberChatResult {
     summary: string
 }
 
-const LIGHTWEIGHT_CHAT_TIMEOUT_MS = 2 * 60 * 1000
+const LIGHTWEIGHT_CHAT_TIMEOUT_MS = 30 * 60 * 1000
 
 function parseStructuredText(raw: unknown): string | null {
     if (typeof raw !== 'object' || raw === null) return null
@@ -71,7 +73,8 @@ export class MemberChatService {
         private readonly groupMessages: GroupMessageService,
         private readonly runStream: GroupRunStream,
         private readonly debug: GroupDebugLogger,
-        private readonly interactions: AgentInteractionService
+        private readonly interactions: AgentInteractionService,
+        private readonly mailbox: OrchestratorMailboxService
     ) {}
 
     async chat(params: MemberChatParams): Promise<MemberChatResult> {
@@ -138,7 +141,10 @@ export class MemberChatService {
         return [
             pinnedContext,
             '这是群聊中的轻量回复，不是任务交付。',
-            '用户看到的内容只能通过 MCP 工具 submit_member_chat 提交，参数 {"text":"你的回复正文"}。不要只把回复写在普通文本里。',
+            '用户看到的内容只能通过 MCP 工具 submit_member_chat 提交。不要只把回复写在普通文本里。',
+            '普通回复：{"text":"你的回复正文"}。不要在这里向用户提问。',
+            '进度、卡点或需要拍板时调用 report_for_orchestrator（会阻塞直到编排器回复），不要使用 AskUserQuestion：',
+            '{"kind":"question","text":"做 Web 还是 CLI？"}',
             '不要创建计划或待办。除非需要核对文件细节，否则不要读写文件。',
             '只用你自己的角色身份回复。',
             `用户/编排器的指令：${instruction}`
@@ -152,16 +158,25 @@ export class MemberChatService {
         session: AgentSession,
         agent: Agent,
         prompt: string
-    ): Promise<{ finalText: string; fatal: string | null; agentMessageId: string | null }> {
+    ): Promise<{
+        finalText: string
+        fatal: string | null
+        agentMessageId: string | null
+    }> {
         const provider = await this.resolveProvider(params.userId, agent)
         const config = agentToConfig(agent, session, provider.apiKey, provider.baseUrl, session.id)
-        return withControlMcp('submit_member_chat', config.mcpServers, async (control) => {
-            const adapter = createAgent(
-                agent.vendor,
-                applyControlMcpConfig(config, agent.vendor, control, 'merge')
-            )
-            return this.consumeMemberChatTurn(params, session, agent, prompt, adapter, control)
-        })
+        return withControlMcp(
+            ['submit_member_chat', 'report_for_orchestrator'],
+            config.mcpServers,
+            async (control) => {
+                const adapter = createAgent(
+                    agent.vendor,
+                    applyControlMcpConfig(config, agent.vendor, control, 'merge')
+                )
+                return this.consumeMemberChatTurn(params, session, agent, prompt, adapter, control)
+            },
+            { mailboxTimeoutMs: LIGHTWEIGHT_CHAT_TIMEOUT_MS }
+        )
     }
 
     private async consumeMemberChatTurn(
@@ -170,8 +185,12 @@ export class MemberChatService {
         agent: Agent,
         prompt: string,
         adapter: ReturnType<typeof createAgent>,
-        control: { resolve(events: Iterable<AgentEvent>): Promise<{ payload: unknown } | null> }
-    ): Promise<{ finalText: string; fatal: string | null; agentMessageId: string | null }> {
+        control: ControlMcpSession
+    ): Promise<{
+        finalText: string
+        fatal: string | null
+        agentMessageId: string | null
+    }> {
         this.debug.log('group.member_chat.turn_started', {
             groupId: params.group.id,
             runId: params.runId,
@@ -194,29 +213,44 @@ export class MemberChatService {
 
         await this.messages.saveMessage(params.userId, agent.id, session.id, 'user', prompt)
         try {
-            const iterator = adapter
-                .send(prompt, { signal: deadline.signal, turnId, onInteraction })
-                [Symbol.asyncIterator]()
-            while (true) {
-                const next = await Promise.race([iterator.next(), deadline.expired])
-                if (next.done) break
-                const ev = next.value
-                events.push(ev)
-                if (ev.type === 'done') {
-                    sawDone = true
-                    if (!ev.success) fatal ??= 'Agent turn failed'
-                    await this.publishMemberEvent(params, ev)
-                    continue
-                }
-                if (ev.type === 'error' && ev.fatal) fatal = ev.message
-                this.debug.log('group.member_chat.turn_event', {
-                    groupId: params.group.id,
+            await this.mailbox.withMemberWatch(
+                control,
+                {
+                    group: params.group,
+                    userId: params.userId,
                     runId: params.runId,
+                    taskId: null,
                     agentId: agent.id,
-                    event: ev
-                })
-                await this.publishMemberEvent(params, ev)
-            }
+                    agentName: agent.name,
+                    signal: deadline.signal
+                },
+                deadline.signal,
+                async () => {
+                    const iterator = adapter
+                        .send(prompt, { signal: deadline.signal, turnId, onInteraction })
+                        [Symbol.asyncIterator]()
+                    while (true) {
+                        const next = await Promise.race([iterator.next(), deadline.expired])
+                        if (next.done) break
+                        const ev = next.value
+                        events.push(ev)
+                        if (ev.type === 'done') {
+                            sawDone = true
+                            if (!ev.success) fatal ??= 'Agent turn failed'
+                            await this.publishMemberEvent(params, ev)
+                            continue
+                        }
+                        if (ev.type === 'error' && ev.fatal) fatal = ev.message
+                        this.debug.log('group.member_chat.turn_event', {
+                            groupId: params.group.id,
+                            runId: params.runId,
+                            agentId: agent.id,
+                            event: ev
+                        })
+                        await this.publishMemberEvent(params, ev)
+                    }
+                }
+            )
         } catch (err) {
             fatal ??= this.errMsg(err)
         } finally {

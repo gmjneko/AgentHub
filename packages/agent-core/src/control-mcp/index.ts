@@ -3,6 +3,8 @@ export {
   CONTROL_MCP_TOOLS,
   CONTROL_MCP_SINK_ENV,
   CONTROL_MCP_TOOLS_ENV,
+  CONTROL_MCP_MAILBOX_ENV,
+  CONTROL_MCP_MAILBOX_TIMEOUT_ENV,
   claudeControlToolName,
   isControlMcpTool,
   isControlMcpToolName,
@@ -30,3 +32,17 @@ export {
   type ControlMcpMode,
   type ControlMcpSession
 } from './host.js'
+export {
+  parseControlMcpMailboxRequest,
+  parseControlMcpMailboxResponse,
+  readControlMcpMailboxRequest,
+  readControlMcpMailboxResponse,
+  takeControlMcpMailboxRequest,
+  waitForControlMcpMailboxResponse,
+  watchControlMcpMailbox,
+  writeControlMcpMailboxRequest,
+  writeControlMcpMailboxResponse,
+  type ControlMcpMailboxHandler,
+  type ControlMcpMailboxRequest,
+  type ControlMcpMailboxResponse
+} from './mailbox.js'

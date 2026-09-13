@@ -289,6 +289,9 @@ export class GroupRunExecutor implements OnModuleInit {
         })
 
         try {
+            await this.groupMessages
+                .markUnattachedAgentQuestionsAnswered(group.id, userText, mentionedAgentIds)
+                .catch(() => undefined)
             // 恢复优先：本群存在挂起任务且本条消息构成对其的答复 → 恢复该任务，跳过常规路由。
             const resume = await this.resolveResume(group, userId, mentionedAgentIds, byAgent)
             if (resume === 'ambiguous') {
@@ -573,6 +576,7 @@ export class GroupRunExecutor implements OnModuleInit {
                 routeKind: nextRouteKind,
                 mentionedAgentIds: nextMentionedAgentIds,
                 members,
+                signal,
                 suppressNoopMessage: continuation
             })
             this.debug.log('group.run.orchestrated.nodes', {

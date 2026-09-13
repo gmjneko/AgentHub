@@ -159,17 +159,19 @@ export class GroupMessageService {
     }
 
     /**
-     * 成员挂起任务向用户提问 → 落一张 agent-question 卡片。
+     * 成员向用户提问 → 落一张 agent-question 卡片。
      * 在此归一化 question/option 的 id（q1/q2…、q1-o1…），成员不必自行给 id。
      * text 存一句话摘要（预览/回退用）；结构化问题放 payload。
+     * taskId 为空表示轻量 memberTurns 提问，不挂起黑板任务。
      */
     async appendAgentQuestion(
         groupId: string,
         userId: string,
-        senderAgentId: string,
-        taskId: string,
+        senderAgentId: string | null,
+        taskId: string | null,
         questions: AgentQuestion[],
-        summary: string
+        summary: string,
+        senderRole: 'agent' | 'orchestrator' = senderAgentId ? 'agent' : 'orchestrator'
     ): Promise<GroupMessageView> {
         const normalized = questions.map((q, qi) => ({
             id: `q${qi + 1}`,
@@ -188,10 +190,10 @@ export class GroupMessageService {
                 groupChatId: groupId,
                 userId,
                 kind: 'agent-question',
-                senderRole: 'agent',
+                senderRole,
                 senderAgentId,
                 text: summary,
-                payload: { taskId, questions: normalized, answered: false },
+                payload: { taskId: taskId ?? '', questions: normalized, answered: false },
                 pinned: false
             })
         )
@@ -242,6 +244,54 @@ export class GroupMessageService {
             updated += 1
         }
         return updated
+    }
+
+    /** 轻量提问卡片：按 @成员 或最近一张未挂任务的卡片标记已作答。 */
+    async markUnattachedAgentQuestionsAnswered(
+        groupId: string,
+        answerText: string,
+        agentIds: string[] = []
+    ): Promise<number> {
+        const messages = await this.messageRepo.find({
+            where: { groupChatId: groupId, kind: 'agent-question' },
+            order: { createdAt: 'DESC' }
+        })
+        const unattached = messages.filter((message) => {
+            const payload = message.payload ?? {}
+            const taskId = typeof payload.taskId === 'string' ? payload.taskId : ''
+            return !taskId && payload.answered !== true
+        })
+        const targets =
+            agentIds.length > 0
+                ? unattached.filter(
+                      (message) =>
+                          typeof message.senderAgentId === 'string' &&
+                          agentIds.includes(message.senderAgentId)
+                  )
+                : unattached.slice(0, 1)
+        let updated = 0
+        for (const message of targets) {
+            message.payload = { ...message.payload, answered: true, answerText }
+            await this.messageRepo.save(message)
+            updated += 1
+        }
+        return updated
+    }
+
+    async markLatestOrchestratorQuestionAnswered(groupId: string, answerText: string): Promise<number> {
+        const messages = await this.messageRepo.find({
+            where: { groupChatId: groupId, kind: 'agent-question' },
+            order: { createdAt: 'DESC' }
+        })
+        const target = messages.find((message) => {
+            const payload = message.payload ?? {}
+            const taskId = typeof payload.taskId === 'string' ? payload.taskId : ''
+            return message.senderRole === 'orchestrator' && !taskId && payload.answered !== true
+        })
+        if (!target) return 0
+        target.payload = { ...target.payload, answered: true, answerText }
+        await this.messageRepo.save(target)
+        return 1
     }
 
     async updateTaskListTaskStatus(

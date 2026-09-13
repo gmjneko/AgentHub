@@ -44,6 +44,8 @@
 /multiSelect/allowText`），群里渲染一张**提问卡片**；用户逐题勾选/补充 → 点「提交」→ 前端拼成一句中文回复，
 带 `mentions:[该成员]` 经 `converse` 自动发送 → 命中恢复。无结构化时回退为纯文本提问。
 
+轻量 `memberTurns` 与任务成员的新提问改为先 `report_for_orchestrator`，由编排器 `ask_user` 出同一张卡片（interaction 作答，任务保持 `in_progress`）。旧的 `waiting_input` + converse 恢复仍保留给隐藏 handoff / 存量路径。详见 [`group-orchestrator-mailbox.md`](./group-orchestrator-mailbox.md)。
+
 - 契约：`packages/shared/src/chat.ts` 新增 `AgentQuestion(Option)` + `AgentQuestionMessage`/`GroupAgentQuestionView`，
   并入 `ChatMessage`/`GroupMessageView` 联合。
 - 后端：新消息 kind `agent-question`；`group-message.service.ts` 加 `appendAgentQuestion`（服务端归一化

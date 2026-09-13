@@ -4,13 +4,18 @@ export const CONTROL_MCP_TOOLS = [
   'submit_orchestrator_plan',
   'submit_final_review',
   'submit_member_chat',
-  'submit_member_report'
+  'submit_member_report',
+  'report_for_orchestrator',
+  'send_to_member',
+  'ask_user'
 ] as const
 
 export type ControlMcpToolName = (typeof CONTROL_MCP_TOOLS)[number]
 
 export const CONTROL_MCP_SINK_ENV = 'AGENTHUB_CONTROL_SINK'
 export const CONTROL_MCP_TOOLS_ENV = 'AGENTHUB_CONTROL_TOOLS'
+export const CONTROL_MCP_MAILBOX_ENV = 'AGENTHUB_CONTROL_MAILBOX'
+export const CONTROL_MCP_MAILBOX_TIMEOUT_ENV = 'AGENTHUB_CONTROL_MAILBOX_TIMEOUT_MS'
 
 export function isControlMcpToolName(value: string): value is ControlMcpToolName {
   return (CONTROL_MCP_TOOLS as readonly string[]).includes(value)

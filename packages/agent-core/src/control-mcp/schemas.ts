@@ -95,12 +95,70 @@ const REVIEW_SCHEMA: Record<string, unknown> = {
   additionalProperties: false
 }
 
+const MEMBER_QUESTION_ITEMS: Record<string, unknown> = {
+  type: 'array',
+  items: {
+    type: 'object',
+    properties: {
+      header: { type: 'string' },
+      question: { type: 'string' },
+      multiSelect: { type: 'boolean' },
+      allowText: { type: 'boolean' },
+      options: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            label: { type: 'string' },
+            description: { type: 'string' }
+          },
+          required: ['label'],
+          additionalProperties: false
+        }
+      }
+    },
+    required: ['question'],
+    additionalProperties: true
+  }
+}
+
 const MEMBER_CHAT_SCHEMA: Record<string, unknown> = {
   type: 'object',
   properties: {
     text: { type: 'string' }
   },
   required: ['text'],
+  additionalProperties: false
+}
+
+const REPORT_FOR_ORCHESTRATOR_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    kind: { type: 'string', enum: ['progress', 'question'] },
+    text: { type: 'string' },
+    needDecision: { type: 'boolean' }
+  },
+  required: ['kind', 'text'],
+  additionalProperties: false
+}
+
+const SEND_TO_MEMBER_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    text: { type: 'string' },
+    action: { type: 'string', enum: ['continue', 'revise'] }
+  },
+  required: ['text'],
+  additionalProperties: false
+}
+
+const ASK_USER_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    text: { type: 'string' },
+    questions: MEMBER_QUESTION_ITEMS
+  },
+  required: ['text', 'questions'],
   additionalProperties: false
 }
 
@@ -154,34 +212,6 @@ const MEMBER_REPORT_SCHEMA: Record<string, unknown> = {
       },
       required: ['content'],
       additionalProperties: false
-    },
-    awaiting_user_input: { type: 'boolean' },
-    question: { type: 'string' },
-    questions: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          header: { type: 'string' },
-          question: { type: 'string' },
-          multiSelect: { type: 'boolean' },
-          allowText: { type: 'boolean' },
-          options: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                label: { type: 'string' },
-                description: { type: 'string' }
-              },
-              required: ['label'],
-              additionalProperties: false
-            }
-          }
-        },
-        required: ['question'],
-        additionalProperties: true
-      }
     }
   },
   required: ['summary'],
@@ -204,14 +234,32 @@ export const CONTROL_MCP_TOOL_DEFINITIONS: Record<ControlMcpToolName, ControlMcp
   submit_member_chat: {
     name: 'submit_member_chat',
     description:
-      'Submit the user-visible lightweight chat reply. text is shown as the member’s message.',
+      'Submit the user-visible lightweight chat reply. text is the only user-visible message. Do not ask the user here.',
     inputSchema: MEMBER_CHAT_SCHEMA
   },
   submit_member_report: {
     name: 'submit_member_report',
     description:
-      'Submit the member task completion report. summary is shown to the user. List created or modified deliverable paths in affected.artifacts. Set awaiting_user_input when the task must pause for the user.',
+      'Submit the member task completion report. summary is shown to the user. List created or modified deliverable paths in affected.artifacts. Ask the orchestrator with report_for_orchestrator instead of asking the user.',
     inputSchema: MEMBER_REPORT_SCHEMA
+  },
+  report_for_orchestrator: {
+    name: 'report_for_orchestrator',
+    description:
+      'Report progress or ask the Orchestrator a question. This call blocks until the Orchestrator replies. Do not use this to talk to the user.',
+    inputSchema: REPORT_FOR_ORCHESTRATOR_SCHEMA
+  },
+  send_to_member: {
+    name: 'send_to_member',
+    description:
+      'Reply to the waiting member. text is injected as the report_for_orchestrator tool result. Use continue to let them proceed, revise to ask them to change course.',
+    inputSchema: SEND_TO_MEMBER_SCHEMA
+  },
+  ask_user: {
+    name: 'ask_user',
+    description:
+      'Ask the human a clickable question card. After they answer you will be prompted again and must then call send_to_member or submit_orchestrator_plan.',
+    inputSchema: ASK_USER_SCHEMA
   }
 }
 

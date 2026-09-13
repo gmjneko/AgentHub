@@ -1980,8 +1980,22 @@ function handleGroupRuntimeEvent(event: GroupRunEvent): void {
     case 'blackboard_update':
       runtime.value = { ...runtime.value, phase: 'thinking', label: event.update.summary }
       return
+    case 'orchestrator_turn_event': {
+      const inner = event.event
+      if (inner.type === 'user_input_request') {
+        runtime.value = { ...runtime.value, phase: 'thinking', label: '编排器正在向你提问' }
+      } else if (inner.type === 'tool_use') {
+        runtime.value = { ...runtime.value, phase: 'tool', label: '编排器调用工具', toolName: inner.name }
+      } else {
+        runtime.value = { ...runtime.value, phase: 'thinking', label: '编排器处理成员请示' }
+      }
+      return
+    }
     case 'orchestrator_report':
       runtime.value = { ...runtime.value, phase: 'streaming', label: '汇总中', detail: event.text }
+      return
+    case 'deploy_card':
+      runtime.value = { ...runtime.value, phase: 'thinking', label: '已产出可预览交付' }
       return
     case 'done':
       runtime.value = {
@@ -2086,6 +2100,9 @@ function buildGroupRunHandlers(
             }
           }
         }
+      } else if (event.type === 'orchestrator_turn_event') {
+        const orchestratorKey = ensureGroupOrchestratorRunMessage(group, runId)
+        syncRunMessage(orchestratorKey, event.event)
       } else if (event.type === 'orchestrator_report') {
         const orchestratorKey = ensureGroupOrchestratorRunMessage(group, runId)
         updateAgentRunText(orchestratorKey, event.text)

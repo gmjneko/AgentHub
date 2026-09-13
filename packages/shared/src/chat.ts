@@ -229,7 +229,7 @@ export interface GroupOptionsMessageView extends GroupMessageBase {
 
 export interface GroupAgentQuestionView extends GroupMessageBase {
   kind: 'agent-question'
-  /** 关联的挂起任务 id（用户回复时据此恢复 + 标记已作答） */
+  /** 关联的挂起任务 id；轻量 memberTurns 提问为空字符串 */
   taskId: string
   questions: AgentQuestion[]
   /** 一句话摘要（预览/回退） */

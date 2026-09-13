@@ -43,6 +43,7 @@ import { OrchestratorService } from './run/orchestrator.service.js'
 import { DispatchService } from './run/dispatch.service.js'
 import { MemberChatService } from './run/member-chat.service.js'
 import { GroupRunExecutor } from './run/group-run.executor.js'
+import { OrchestratorMailboxService } from './run/orchestrator-mailbox.service.js'
 import { LlmOrchestratorExecutor, ORCHESTRATOR_PLANNER } from './run/orchestrator-executor.js'
 import {
     LlmOrchestratorFinalReviewer,
@@ -111,6 +112,7 @@ import { AgentInteractionModule } from '../interactions/agent-interaction.module
         DispatchService,
         MemberChatService,
         GroupRunExecutor,
+        OrchestratorMailboxService,
         LlmOrchestratorExecutor,
         LlmOrchestratorFinalReviewer,
         LlmOrchestratorHandoffReviewer,

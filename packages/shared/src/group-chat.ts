@@ -175,6 +175,12 @@ export type GroupRunEvent =
       event: AgentEvent
     }
   | {
+      /** Orchestrator mailbox / ask_user turn events, including user_input_request. */
+      type: 'orchestrator_turn_event'
+      runId: string
+      event: AgentEvent
+    }
+  | {
       type: 'blackboard_update'
       runId: string
       /** task that produced the change; null for member-chat / orchestrator-driven changes */

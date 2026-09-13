@@ -1,10 +1,12 @@
 import { existsSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { AgentAdapterConfig, AgentEvent, AgentVendor } from '../adapter/types.js'
 import {
+  CONTROL_MCP_MAILBOX_ENV,
+  CONTROL_MCP_MAILBOX_TIMEOUT_ENV,
   CONTROL_MCP_SERVER,
   CONTROL_MCP_SINK_ENV,
   CONTROL_MCP_TOOLS_ENV,
@@ -13,15 +15,21 @@ import {
   type ControlMcpToolName
 } from './names.js'
 import { readControlMcpSink, type ControlMcpSubmission } from './sink.js'
+import {
+  watchControlMcpMailbox,
+  type ControlMcpMailboxHandler
+} from './mailbox.js'
 
-export type ControlMcpMode = 'control-only' | 'merge'
+export type ControlMcpMode = 'control-only' | 'merge' | 'mailbox'
 
 export interface ControlMcpSession {
   mcpServers: Record<string, unknown>
   claudeAllowedTools: string[]
+  mailboxDir: string
   readSink(): Promise<ControlMcpSubmission | null>
   collectFromEvents(events: Iterable<AgentEvent>): ControlMcpSubmission | null
   resolve(events: Iterable<AgentEvent>): Promise<ControlMcpSubmission | null>
+  watchMailbox(handler: ControlMcpMailboxHandler, signal: AbortSignal): Promise<void>
 }
 
 function controlMcpLaunch(): { command: string; args: string[] } {
@@ -36,7 +44,9 @@ function controlMcpLaunch(): { command: string; args: string[] } {
 export function mergeControlMcpServers(
   existing: Record<string, unknown> | undefined,
   sinkPath: string,
-  tools: readonly ControlMcpToolName[]
+  tools: readonly ControlMcpToolName[],
+  mailboxDir?: string,
+  mailboxTimeoutMs?: number
 ): Record<string, unknown> {
   const launch = controlMcpLaunch()
   return {
@@ -47,7 +57,15 @@ export function mergeControlMcpServers(
       args: launch.args,
       env: {
         [CONTROL_MCP_SINK_ENV]: sinkPath,
-        [CONTROL_MCP_TOOLS_ENV]: tools.join(',')
+        [CONTROL_MCP_TOOLS_ENV]: tools.join(','),
+        ...(mailboxDir
+          ? {
+              [CONTROL_MCP_MAILBOX_ENV]: mailboxDir,
+              ...(mailboxTimeoutMs
+                ? { [CONTROL_MCP_MAILBOX_TIMEOUT_ENV]: String(mailboxTimeoutMs) }
+                : {})
+            }
+          : {})
       }
     }
   }
@@ -77,9 +95,9 @@ export function mergeControlAllowedTools(
   mode: ControlMcpMode
 ): string[] | undefined {
   if (vendor !== 'claude') {
-    return mode === 'control-only' ? undefined : existing
+    return mode === 'merge' ? existing : undefined
   }
-  if (mode === 'control-only') return controlClaudeTools
+  if (mode === 'control-only' || mode === 'mailbox') return controlClaudeTools
   if (!existing) return undefined
   return [...new Set([...existing, ...controlClaudeTools])]
 }
@@ -100,26 +118,42 @@ export function applyControlMcpConfig(
       mode
     ),
     permissionMode:
-      mode === 'control-only' && vendor === 'codex' ? 'plan' : config.permissionMode
+      vendor === 'codex' && mode === 'control-only'
+        ? 'plan'
+        : vendor === 'codex' && mode === 'mailbox'
+          ? 'bypassPermissions'
+          : config.permissionMode
   }
 }
 
 export async function withControlMcp<T>(
   tools: ControlMcpToolName | readonly ControlMcpToolName[],
   existingMcp: Record<string, unknown> | undefined,
-  fn: (session: ControlMcpSession) => Promise<T>
+  fn: (session: ControlMcpSession) => Promise<T>,
+  options?: { mailboxTimeoutMs?: number }
 ): Promise<T> {
   const allowed = Array.isArray(tools) ? [...tools] : [tools]
   const dir = await mkdtemp(join(tmpdir(), 'agenthub-control-'))
   const sinkPath = join(dir, 'sink.json')
+  const mailboxDir = join(dir, 'mailbox')
+  await mkdir(mailboxDir, { recursive: true })
+  const enableMailbox = allowed.includes('report_for_orchestrator')
   try {
     const session: ControlMcpSession = {
-      mcpServers: mergeControlMcpServers(existingMcp, sinkPath, allowed),
+      mcpServers: mergeControlMcpServers(
+        existingMcp,
+        sinkPath,
+        allowed,
+        enableMailbox ? mailboxDir : undefined,
+        options?.mailboxTimeoutMs
+      ),
       claudeAllowedTools: allowed.map(claudeControlToolName),
+      mailboxDir,
       readSink: () => readControlMcpSink(sinkPath),
       collectFromEvents: (events) => collectControlMcpSubmission(events, allowed),
       resolve: async (events) =>
-        collectControlMcpSubmission(events, allowed) ?? (await readControlMcpSink(sinkPath))
+        collectControlMcpSubmission(events, allowed) ?? (await readControlMcpSink(sinkPath)),
+      watchMailbox: (handler, signal) => watchControlMcpMailbox(mailboxDir, handler, signal)
     }
     return await fn(session)
   } finally {

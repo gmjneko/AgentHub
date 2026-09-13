@@ -16,7 +16,8 @@ import {
     applyControlMcpConfig,
     createAgent,
     withControlMcp,
-    type AgentEvent
+    type AgentEvent,
+    type ControlMcpSession
 } from '../../adapter/index.js'
 import { Agent } from '../../entities/agent.entity.js'
 import { AgentSession } from '../../entities/agent-session.entity.js'
@@ -42,6 +43,7 @@ import { GroupChat } from '../entities/group-chat.entity.js'
 import { GroupChatMember } from '../entities/group-chat-member.entity.js'
 import { GroupRunStream } from './group-run-stream.service.js'
 import { GroupDebugLogger } from '../debug/group-debug-logger.service.js'
+import { OrchestratorMailboxService } from './orchestrator-mailbox.service.js'
 
 /** 成员收尾结构化报告（成员不直接写库，服务端据此 + git diff 代写黑板） */
 interface MemberReport {
@@ -109,24 +111,12 @@ summary 会作为群聊里该成员最终消息的正文展示给用户，所以
 凡是本轮创建或修改了可交付文件（代码、页面、文档、设计稿、测试报告等），必须把它们作为产出物记录到 affected.artifacts，使用工作区相对路径；这些路径会被服务端写入黑板产出物，侧边栏“产出物”只依赖黑板记录展示。
 只有确有内容才填 decisions / contracts / memory_candidate。不要修改他人 owner 的 approvalRequired 契约。
 
-# 需要向用户确认信息时（重要）
-**不要使用 AskUserQuestion 工具（群聊后台运行里它拿不到用户输入、必失败）**。改为在 submit_member_report 里设 awaiting_user_input:true，并尽量给出结构化的 questions 数组（会渲染成可点选的提问卡片，用户作答后自动拼成回复发回给你）：
-{
-  "summary":"等待用户确认时区计算器需求",
-  "awaiting_user_input":true,
-  "question":"请确认城市/形态/交互/夏令时 4 个问题",
-  "questions":[
-    {"header":"代表城市","question":"各国用哪个代表城市？","multiSelect":true,"allowText":true,
-     "options":[{"label":"北京","description":"中国(UTC+8)"},{"label":"纽约","description":"美东"},{"label":"洛杉矶","description":"美西"}]},
-    {"header":"产品形态","question":"做成什么形态？",
-     "options":[{"label":"Web 网页版"},{"label":"命令行 CLI"},{"label":"桌面应用"}]},
-    {"header":"夏令时","question":"是否处理英美夏令时？",
-     "options":[{"label":"需要"},{"label":"不需要"}]}
-  ]
-}
-规则：每题 question 必填；options 每项至少含 label（description 可选）；multiSelect/allowText 默认 false；
-若确实无法结构化，至少给出 question 一句话摘要（将回退为纯文本提问）。question 仅作一句话摘要，不要把所有细节塞进它。
-设置后本任务会被挂起、依赖它的下游任务不会启动；用户回复后，你会在同一会话里收到答复并继续完成任务（无需重述上下文）。`
+# 向 Orchestrator 请示（重要）
+**不要使用 AskUserQuestion，也不要在 submit_member_report / submit_member_chat 里向用户提问。**
+进度、卡点、需要拍板或问同事时，调用 report_for_orchestrator（会阻塞直到编排器回复）：
+{"kind":"question","text":"API 合同还没定，是否先用 mock？","needDecision":true}
+编排器会直接答复你，或先问用户再把结论发回来。收到回复后继续干活，最后仍要 submit_member_report。
+面向用户的交付摘要只用 submit_member_report.summary 或 submit_member_chat。`
 
 const DEFAULT_TURN_TIMEOUT_MS = 30 * 60 * 1000
 
@@ -158,7 +148,8 @@ export class DispatchService {
         private readonly continuity: ContinuityResolver,
         private readonly runStream: GroupRunStream,
         private readonly debug: GroupDebugLogger,
-        private readonly interactions: AgentInteractionService
+        private readonly interactions: AgentInteractionService,
+        private readonly mailbox: OrchestratorMailboxService
     ) {}
 
     async dispatch(params: DispatchParams): Promise<DispatchResult> {
@@ -524,13 +515,18 @@ export class DispatchService {
     }> {
         const provider = await this.resolveProvider(params.userId, agent)
         const config = agentToConfig(agent, session, provider.apiKey, provider.baseUrl, session.id)
-        return withControlMcp('submit_member_report', config.mcpServers, async (control) => {
-            const adapter = createAgent(
-                agent.vendor,
-                applyControlMcpConfig(config, agent.vendor, control, 'merge')
-            )
-            return this.consumeMemberTurn(params, session, agent, prompt, adapter, control)
-        })
+        return withControlMcp(
+            ['submit_member_report', 'submit_member_chat', 'report_for_orchestrator'],
+            config.mcpServers,
+            async (control) => {
+                const adapter = createAgent(
+                    agent.vendor,
+                    applyControlMcpConfig(config, agent.vendor, control, 'merge')
+                )
+                return this.consumeMemberTurn(params, session, agent, prompt, adapter, control)
+            },
+            { mailboxTimeoutMs: DEFAULT_TURN_TIMEOUT_MS }
+        )
     }
 
     private async consumeMemberTurn(
@@ -539,7 +535,7 @@ export class DispatchService {
         agent: Agent,
         prompt: string,
         adapter: ReturnType<typeof createAgent>,
-        control: { resolve(events: Iterable<AgentEvent>): Promise<{ payload: unknown } | null> }
+        control: ControlMcpSession
     ): Promise<{
         finalText: string
         fatal: string | null
@@ -585,31 +581,46 @@ export class DispatchService {
             params.objective
         )
         try {
-            const iterator = adapter.send(prompt, { signal: deadline.signal, turnId, onInteraction })[Symbol.asyncIterator]()
-            while (true) {
-                const next = await Promise.race([iterator.next(), deadline.expired])
-                if (next.done) break
-                const ev = next.value
-                events.push(ev)
-                if (ev.type === 'done') {
-                    sawDone = true;
-                    if (!ev.success) fatal ??= 'Agent turn failed'
-                    if (ev.finalText) finalFromDone = ev.finalText
-                    await this.publishMemberEvent(params, ev)
-                    continue
-                }
-                if (ev.type === 'text') textParts.push(ev.text)
-                else if (ev.type === 'error' && ev.fatal) fatal = ev.message
-                else this.messages.collectStep(ev, stepDrafts, toolIndex)
-                this.debug.log('group.dispatch.turn_event', {
-                    groupId: params.group.id,
+            await this.mailbox.withMemberWatch(
+                control,
+                {
+                    group: params.group,
+                    userId: params.userId,
                     runId: params.runId,
                     taskId: params.taskId,
                     agentId: agent.id,
-                    event: ev
-                })
-                await this.publishMemberEvent(params, ev)
-            }
+                    agentName: agent.name,
+                    signal: deadline.signal
+                },
+                deadline.signal,
+                async () => {
+                    const iterator = adapter.send(prompt, { signal: deadline.signal, turnId, onInteraction })[Symbol.asyncIterator]()
+                    while (true) {
+                        const next = await Promise.race([iterator.next(), deadline.expired])
+                        if (next.done) break
+                        const ev = next.value
+                        events.push(ev)
+                        if (ev.type === 'done') {
+                            sawDone = true;
+                            if (!ev.success) fatal ??= 'Agent turn failed'
+                            if (ev.finalText) finalFromDone = ev.finalText
+                            await this.publishMemberEvent(params, ev)
+                            continue
+                        }
+                        if (ev.type === 'text') textParts.push(ev.text)
+                        else if (ev.type === 'error' && ev.fatal) fatal = ev.message
+                        else this.messages.collectStep(ev, stepDrafts, toolIndex)
+                        this.debug.log('group.dispatch.turn_event', {
+                            groupId: params.group.id,
+                            runId: params.runId,
+                            taskId: params.taskId,
+                            agentId: agent.id,
+                            event: ev
+                        })
+                        await this.publishMemberEvent(params, ev)
+                    }
+                }
+            )
         } catch (err) {
             fatal ??= this.errMsg(err)
         } finally {

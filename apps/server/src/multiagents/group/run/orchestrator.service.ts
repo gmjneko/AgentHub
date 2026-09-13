@@ -42,6 +42,7 @@ export interface OrchestratorPlanParams {
     userText: string
     routeKind: GroupRouteKind
     mentionedAgentIds: string[]
+    signal?: AbortSignal
     members: Array<{ member: GroupChatMember; agent: Agent }>
     /**
      * Internal continuation checks ask the Orchestrator whether more downstream
@@ -191,7 +192,9 @@ export class OrchestratorService {
             userText: params.userText,
             routeKind,
             mentionedAgentIds,
-            context
+            context,
+            runId,
+            signal: params.signal
         })
         this.debug.log('group.orchestrator.executor.raw', {
             groupId: group.id,
