@@ -156,18 +156,18 @@ export class LlmOrchestratorFinalReviewer implements OrchestratorFinalReviewer {
     private async runReviewer(req: OrchestratorFinalReviewRequest): Promise<ReviewerRunResult> {
         const provider = await this.providers.resolveRuntimeConfig(
             req.userId,
-            req.group.orchestratorProviderId
+            req.group.orchestratorProviderId!
         )
         const home = this.workspace.memberHomeDir(
             req.group.id,
             'orchestrator',
             req.group.workspaceDir
         )
-        await this.agentWorkspace.ensureAgentHomeDirectory(req.group.orchestratorVendor, home)
+        await this.agentWorkspace.ensureAgentHomeDirectory(req.group.orchestratorVendor!, home)
 
         const config: AgentAdapterConfig = {
             id: `orch-review-${req.group.id}`,
-            model: req.group.orchestratorModel,
+            model: req.group.orchestratorModel!,
             agentHomeDirectory: home,
             workingDirectory: home,
             apiKey: provider.apiKey,
@@ -186,7 +186,7 @@ export class LlmOrchestratorFinalReviewer implements OrchestratorFinalReviewer {
         return withControlMcp('submit_final_review', undefined, async (control) => {
             const adapter = this.createReviewerAdapter(
                 req,
-                applyControlMcpConfig(config, req.group.orchestratorVendor, control, 'control-only')
+                applyControlMcpConfig(config, req.group.orchestratorVendor!, control, 'control-only')
             )
             return this.sendReviewRequest(adapter, prompt, control)
         })
@@ -196,7 +196,7 @@ export class LlmOrchestratorFinalReviewer implements OrchestratorFinalReviewer {
         req: OrchestratorFinalReviewRequest,
         config: AgentAdapterConfig
     ): AgentAdapter {
-        const adapter = createAgent(req.group.orchestratorVendor, config)
+        const adapter = createAgent(req.group.orchestratorVendor!, config)
         if (req.group.orchestratorSessionId) {
             adapter.resumeWith(req.group.orchestratorSessionId)
         }

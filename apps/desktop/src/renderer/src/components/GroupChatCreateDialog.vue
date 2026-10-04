@@ -5,6 +5,7 @@ import {
   type AgentVendor,
   type AgentView,
   type CreateGroupChatPayload,
+  type GroupChatMode,
   type GroupChatView,
   type PlatformProviderView,
   type ProjectStatus
@@ -38,6 +39,8 @@ const loadError = ref<string | null>(null)
 
 const form = reactive({
   title: '',
+  mode: 'standard' as GroupChatMode,
+  leaderAgentId: '',
   memberIds: new Set<string>(),
   orchestratorVendor: 'claude' as AgentVendor,
   orchestratorProviderId: '',
@@ -98,6 +101,8 @@ async function load(): Promise<void> {
 
 function reset(): void {
   form.title = ''
+  form.mode = 'standard'
+  form.leaderAgentId = ''
   form.memberIds = new Set()
   form.orchestratorVendor = 'claude'
   form.orchestratorProviderId = ''
@@ -145,23 +150,48 @@ function toggleMember(id: string): void {
   if (next.has(id)) next.delete(id)
   else next.add(id)
   form.memberIds = next
+  if (!next.has(form.leaderAgentId)) {
+    form.leaderAgentId = form.mode === 'agent_team' ? ([...next][0] ?? '') : ''
+  } else if (form.mode === 'agent_team' && !form.leaderAgentId && next.size > 0) {
+    form.leaderAgentId = [...next][0] ?? ''
+  }
+}
+
+function setMode(mode: GroupChatMode): void {
+  form.mode = mode
+  if (mode === 'agent_team') {
+    if (!form.memberIds.has(form.leaderAgentId)) {
+      form.leaderAgentId = [...form.memberIds][0] ?? ''
+    }
+  } else {
+    form.leaderAgentId = ''
+  }
 }
 
 function buildPayload(): CreateGroupChatPayload | string {
   if (!form.title.trim()) return '请填写群标题'
   if (form.memberIds.size === 0) return '请至少选择一个成员 Agent'
-  if (!form.orchestratorProviderId) return '请为 Orchestrator 选择 Provider'
-  if (!form.orchestratorModel.trim()) return '请为 Orchestrator 选择模型'
+  if (form.mode === 'standard') {
+    if (!form.orchestratorProviderId) return '请为 Orchestrator 选择 Provider'
+    if (!form.orchestratorModel.trim()) return '请为 Orchestrator 选择模型'
+  } else if (!form.leaderAgentId || !form.memberIds.has(form.leaderAgentId)) {
+    return '请指定一名成员作为队长'
+  }
   if (!form.projectName.trim()) return '请填写项目名'
 
   return {
     title: form.title.trim(),
     memberAgentIds: [...form.memberIds],
-    orchestrator: {
-      vendor: form.orchestratorVendor,
-      model: form.orchestratorModel.trim(),
-      providerId: form.orchestratorProviderId
-    },
+    mode: form.mode,
+    ...(form.mode === 'agent_team'
+      ? { leaderAgentId: form.leaderAgentId }
+      : {
+          orchestrator: {
+            vendor: form.orchestratorVendor,
+            model: form.orchestratorModel.trim(),
+            providerId: form.orchestratorProviderId
+          }
+        }),
     projectMeta: {
       name: form.projectName.trim(),
       goal: form.projectGoal.trim() || null,
@@ -218,6 +248,38 @@ function onWorkspacePicked(paths: string[]): void {
       </div>
 
       <div>
+        <label class="block text-sm font-medium text-text-main mb-1.5">协作方式</label>
+        <div class="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            class="rounded-md border px-3 py-2 text-left transition-colors"
+            :class="
+              form.mode === 'standard'
+                ? 'border-primary bg-primary-soft text-primary'
+                : 'border-surface-border text-text-main hover:bg-surface-hover'
+            "
+            @click="setMode('standard')"
+          >
+            <span class="block text-sm font-medium">普通群聊</span>
+            <span class="mt-0.5 block text-xs text-text-muted">Orchestrator 拆任务并验收</span>
+          </button>
+          <button
+            type="button"
+            class="rounded-md border px-3 py-2 text-left transition-colors"
+            :class="
+              form.mode === 'agent_team'
+                ? 'border-primary bg-primary-soft text-primary'
+                : 'border-surface-border text-text-main hover:bg-surface-hover'
+            "
+            @click="setMode('agent_team')"
+          >
+            <span class="block text-sm font-medium">Agent Team</span>
+            <span class="mt-0.5 block text-xs text-text-muted">队长和队员在群里直接讨论</span>
+          </button>
+        </div>
+      </div>
+
+      <div>
         <label class="block text-sm font-medium text-text-main mb-1.5">
           成员 Agent
           <span class="font-normal text-text-muted">（多选）</span>
@@ -254,11 +316,23 @@ function onWorkspacePicked(paths: string[]): void {
                 {{ vendorLabel(agent.vendor) }} / {{ agentModelLabel(agent) }}
               </span>
             </span>
+            <span
+              v-if="form.mode === 'agent_team' && form.memberIds.has(agent.id)"
+              class="shrink-0 rounded px-1.5 py-0.5 text-xs font-medium"
+              :class="
+                form.leaderAgentId === agent.id
+                  ? 'bg-primary text-white'
+                  : 'bg-white text-text-muted'
+              "
+              @click.stop="form.leaderAgentId = agent.id"
+            >
+              {{ form.leaderAgentId === agent.id ? '队长' : '设为队长' }}
+            </span>
           </button>
         </div>
       </div>
 
-      <div class="rounded-md bg-surface-hover p-3">
+      <div v-if="form.mode === 'standard'" class="rounded-md bg-surface-hover p-3">
         <div class="mb-2 flex items-center gap-1.5 text-sm font-medium text-text-main">
           <span class="material-symbols-outlined text-xl text-accent">hub</span>
           Orchestrator（独立编排者）

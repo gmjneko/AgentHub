@@ -157,7 +157,7 @@ function todoStatusLabel(status: AgentTodoItem['status']): string {
     <div class="text-xs text-text-muted">
       {{ message.sender.name }} · {{ formatTime(message.timestamp) }}
     </div>
-    <div class="text-md whitespace-pre-wrap break-words">
+    <div class="text-md break-words">
         <div
           v-if="planDoc"
           class="mb-3 overflow-hidden rounded-sm border border-surface-border/80"

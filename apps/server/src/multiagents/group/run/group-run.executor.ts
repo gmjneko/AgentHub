@@ -31,6 +31,7 @@ import { OrchestratorService, type TaskOutcome } from './orchestrator.service.js
 import { computeReady, markDownstreamBlocked } from './task-scheduler.js'
 import { GroupDebugLogger } from '../debug/group-debug-logger.service.js'
 import { GroupAttachmentService } from '../group-attachment.service.js'
+import { AgentTeamRunService } from './agent-team-run.service.js'
 
 interface MemberPair {
     member: GroupChatMember
@@ -88,7 +89,8 @@ export class GroupRunExecutor implements OnModuleInit {
         private readonly attachments: GroupAttachmentService,
         private readonly runStream: GroupRunStream,
         private readonly config: ConfigService,
-        private readonly debug: GroupDebugLogger
+        private readonly debug: GroupDebugLogger,
+        private readonly agentTeam: AgentTeamRunService
     ) {}
 
     onModuleInit(): void {
@@ -115,7 +117,8 @@ export class GroupRunExecutor implements OnModuleInit {
     ): Promise<{ runId: string }> {
         const group = await this.groupChat.loadGroup(userId, groupId)
         const attachmentIds = payload.attachmentIds ?? []
-        const text = payload.text?.trim() || (attachmentIds.length ? DEFAULT_ATTACHMENT_ONLY_TEXT : '')
+        const text =
+            payload.text?.trim() || (attachmentIds.length ? DEFAULT_ATTACHMENT_ONLY_TEXT : '')
         if (!text) throw BusinessException.badRequest('Message text cannot be empty')
         if (group.status === 'archived' || group.archivedAt) {
             throw BusinessException.forbidden('Archived group chat is read-only')
@@ -289,50 +292,61 @@ export class GroupRunExecutor implements OnModuleInit {
         })
 
         try {
-            await this.groupMessages
-                .markUnattachedAgentQuestionsAnswered(group.id, userText, mentionedAgentIds)
-                .catch(() => undefined)
-            // 恢复优先：本群存在挂起任务且本条消息构成对其的答复 → 恢复该任务，跳过常规路由。
-            const resume = await this.resolveResume(group, userId, mentionedAgentIds, byAgent)
-            if (resume === 'ambiguous') {
-                phase = { success: true, suspended: false }
-            } else if (resume) {
-                // 用户回复即作为答复 → 把对应提问卡片标记已作答（刷新后置灰），再恢复任务。
-                await this.groupMessages
-                    .markAgentQuestionAnswered(group.id, resume.node.id, userText)
-                    .catch(() => undefined)
-                phase = await this.drive(
+            if (group.mode === 'agent_team') {
+                phase = await this.agentTeam.run({
                     group,
                     userId,
                     runId,
-                    resume.graphNodes,
-                    byAgent,
-                    abort.signal,
-                    { node: resume.node, answerText: userText },
-                    { originalUserText: userText }
-                )
-            } else if (routeKind === 'direct_single') {
-                phase = await this.runDirectSingle(
-                    group,
-                    userId,
-                    runId,
-                    mentionedAgentIds[0],
-                    userText,
-                    byAgent,
-                    abort.signal
-                )
-            } else {
-                phase = await this.runOrchestrated(
-                    group,
-                    userId,
-                    runId,
-                    routeKind,
-                    mentionedAgentIds,
                     userText,
                     members,
-                    byAgent,
-                    abort.signal
-                )
+                    signal: abort.signal
+                })
+            } else {
+                await this.groupMessages
+                    .markUnattachedAgentQuestionsAnswered(group.id, userText, mentionedAgentIds)
+                    .catch(() => undefined)
+                // 恢复优先：本群存在挂起任务且本条消息构成对其的答复 → 恢复该任务，跳过常规路由。
+                const resume = await this.resolveResume(group, userId, mentionedAgentIds, byAgent)
+                if (resume === 'ambiguous') {
+                    phase = { success: true, suspended: false }
+                } else if (resume) {
+                    // 用户回复即作为答复 → 把对应提问卡片标记已作答（刷新后置灰），再恢复任务。
+                    await this.groupMessages
+                        .markAgentQuestionAnswered(group.id, resume.node.id, userText)
+                        .catch(() => undefined)
+                    phase = await this.drive(
+                        group,
+                        userId,
+                        runId,
+                        resume.graphNodes,
+                        byAgent,
+                        abort.signal,
+                        { node: resume.node, answerText: userText },
+                        { originalUserText: userText }
+                    )
+                } else if (routeKind === 'direct_single') {
+                    phase = await this.runDirectSingle(
+                        group,
+                        userId,
+                        runId,
+                        mentionedAgentIds[0],
+                        userText,
+                        byAgent,
+                        abort.signal
+                    )
+                } else {
+                    phase = await this.runOrchestrated(
+                        group,
+                        userId,
+                        runId,
+                        routeKind,
+                        mentionedAgentIds,
+                        userText,
+                        members,
+                        byAgent,
+                        abort.signal
+                    )
+                }
             }
         } catch (err) {
             phase = { success: false, suspended: false }

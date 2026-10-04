@@ -39,11 +39,16 @@ export function toGroupChatView(
         isPinned: group.isPinned,
         archivedAt: group.archivedAt ? group.archivedAt.toISOString() : null,
         workspaceDir: group.workspaceDir,
-        orchestrator: {
-            vendor: group.orchestratorVendor,
-            model: group.orchestratorModel,
-            providerId: group.orchestratorProviderId
-        },
+        mode: group.mode ?? 'standard',
+        leaderAgentId: group.leaderAgentId ?? null,
+        orchestrator:
+            group.orchestratorVendor && group.orchestratorModel && group.orchestratorProviderId
+                ? {
+                      vendor: group.orchestratorVendor,
+                      model: group.orchestratorModel,
+                      providerId: group.orchestratorProviderId
+                  }
+                : null,
         members: members.map(({ member, agent }) => toGroupMemberView(member, agent)),
         projectMeta: toProjectMeta(group),
         activeRunId,

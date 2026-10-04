@@ -453,7 +453,8 @@ src/multiagents/group/
 
 ### 数据库与测试
 
-- 10 张表（`group_chat` / `group_chat_member` / `group_message` / `group_run` / `blackboard_artifact` / `blackboard_decision` / `blackboard_contract` / `blackboard_task` / `blackboard_event` / `agent_memory_item`），dev 环境 TypeORM `synchronize` 自动建表，按 `userId` / `groupChatId` 隔离。结构存档见 `sql/group_chat_collaboration.sql`，**真实结构以实体定义为准**。
+- 11 张表（`group_chat` / `group_chat_member` / `group_message` / `group_run` / `group_inbox_message` / `blackboard_artifact` / `blackboard_decision` / `blackboard_contract` / `blackboard_task` / `blackboard_event` / `agent_memory_item`），dev 环境 TypeORM `synchronize` 自动建表，按 `userId` / `groupChatId` 隔离。结构存档见 `sql/group_chat_collaboration.sql`，**真实结构以实体定义为准**。
+- Agent Team（`group_chat.mode=agent_team`）不走 Orchestrator 和 `agenthub_control`。队长是一名成员。发言写入群聊，并按名字复制到其他成员的 `group_inbox_message`；该成员下次运行时注入未消费 Inbox，用最终正文返回 `skip`、给队友的话，或第一行 `用户` 的给用户正文。给用户后本次自动讨论停住。详见 `doc/spec/agent-team.md`。
 - 单元测试：`pnpm -F @agenthub/server test`（`tsx + node:test`），覆盖群聊编排的多阶段续编排、最终审查缺口继续派发，以及上游成员普通文本提问时挂起下游的路径；其它模块测试可继续按相同模式补充。
 
 ### 已知限制（本轮 MVP）

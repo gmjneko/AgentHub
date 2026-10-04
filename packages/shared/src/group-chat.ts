@@ -66,6 +66,9 @@ export interface GroupMemberView {
 
 export type GroupChatStatus = 'active' | 'archived'
 
+/** `standard` keeps the Orchestrator. `agent_team` uses a member leader and inboxes. */
+export type GroupChatMode = 'standard' | 'agent_team'
+
 export interface GroupChatView {
   id: string
   title: string
@@ -76,7 +79,11 @@ export interface GroupChatView {
   archivedAt: string | null
   /** shared git workspace root (source of truth; Agent runtime dirs live under it) */
   workspaceDir: string
-  orchestrator: OrchestratorConfigView
+  mode: GroupChatMode
+  /** member Agent id who leads an Agent Team; null for a standard group */
+  leaderAgentId: string | null
+  /** null for Agent Team groups, which do not configure an Orchestrator */
+  orchestrator: OrchestratorConfigView | null
   members: GroupMemberView[]
   projectMeta: ProjectMeta
   /** in-progress group run; null when idle (used to subscribe on open) */
@@ -91,7 +98,12 @@ export interface CreateGroupChatPayload {
   title: string
   /** member Agent ids (each must belong to the current user) */
   memberAgentIds: string[]
-  orchestrator: OrchestratorConfigInput
+  /** Defaults to `standard`. */
+  mode?: GroupChatMode
+  /** Required when `mode` is `agent_team`. Must be one of `memberAgentIds`. */
+  leaderAgentId?: string
+  /** Required for `standard`. Must be omitted for `agent_team`. */
+  orchestrator?: OrchestratorConfigInput
   projectMeta: ProjectMetaInput
   /** Must be under the current user's agent_workspace; omit to let the server allocate it. */
   workspaceDir?: string

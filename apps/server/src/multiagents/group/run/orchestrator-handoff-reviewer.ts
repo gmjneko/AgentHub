@@ -104,7 +104,7 @@ export class LlmOrchestratorHandoffReviewer implements OrchestratorTaskHandoffRe
     ): Promise<HandoffRunResult> {
         const provider = await this.providers.resolveRuntimeConfig(
             req.userId,
-            req.group.orchestratorProviderId
+            req.group.orchestratorProviderId!
         )
         const prompt = await this.buildPrompt(req)
         this.debug.log('group.orchestrator_handoff_review.prompt', {
@@ -112,12 +112,12 @@ export class LlmOrchestratorHandoffReviewer implements OrchestratorTaskHandoffRe
             runId: req.runId,
             taskId: req.task.id,
             providerType: provider.type,
-            model: req.group.orchestratorModel,
+            model: req.group.orchestratorModel!,
             prompt
         })
         const response = await this.chatClient.chat({
             providerType: provider.type,
-            model: req.group.orchestratorModel,
+            model: req.group.orchestratorModel!,
             apiKey: provider.apiKey,
             baseUrl: provider.baseUrl,
             systemPrompt: HANDOFF_REVIEW_SYSTEM_PROMPT,

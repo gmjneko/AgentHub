@@ -6,7 +6,7 @@ import {
     PrimaryGeneratedColumn,
     UpdateDateColumn
 } from 'typeorm'
-import type { AgentVendor, GroupChatStatus, ProjectStatus } from '@agenthub/shared'
+import type { AgentVendor, GroupChatMode, GroupChatStatus, ProjectStatus } from '@agenthub/shared'
 
 /**
  * GroupChat — 一个群聊：把多个已有 Agent 拉进同一会话，围绕一块黑板 + 一个共享
@@ -44,16 +44,24 @@ export class GroupChat {
     @Column({ type: 'varchar', length: 1024 })
     workspaceDir!: string
 
-    // —— Orchestrator 配置（独立内置角色）——
-    @Column({ type: 'varchar', length: 16 })
-    orchestratorVendor!: AgentVendor
+    /** standard：Orchestrator 编排。agent_team：成员队长 + Inbox。 */
+    @Column({ type: 'varchar', length: 16, default: 'standard' })
+    mode!: GroupChatMode
 
-    @Column({ type: 'varchar', length: 128 })
-    orchestratorModel!: string
+    /** Agent Team 队长的 Agent id；普通群聊为空 */
+    @Column({ type: 'varchar', length: 36, nullable: true })
+    leaderAgentId!: string | null
+
+    // —— Orchestrator 配置（独立内置角色；Agent Team 为空）——
+    @Column({ type: 'varchar', length: 16, nullable: true })
+    orchestratorVendor!: AgentVendor | null
+
+    @Column({ type: 'varchar', length: 128, nullable: true })
+    orchestratorModel!: string | null
 
     /** Orchestrator 引用的 platform_provider.id */
-    @Column({ type: 'varchar', length: 36 })
-    orchestratorProviderId!: string
+    @Column({ type: 'varchar', length: 36, nullable: true })
+    orchestratorProviderId!: string | null
 
     /** Orchestrator SDK 会话 id；内部运行时字段，不暴露给前端 */
     @Column({ type: 'varchar', length: 128, nullable: true })

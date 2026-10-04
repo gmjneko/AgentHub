@@ -1194,6 +1194,19 @@ function memberChatSubmittedText(event: AgentEvent): string | null {
   return typeof text === 'string' && text.trim() ? text.trim() : null
 }
 
+function appendTeamSpeech(group: GroupChatView, agentId: string, text: string): void {
+  const sessionKey = groupSessionKey(group.id)
+  const message: TextMessage = {
+    id: `m-team-${agentId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    chatId: sessionKey,
+    kind: 'text',
+    timestamp: new Date().toISOString(),
+    sender: groupMemberSender(group, agentId),
+    text
+  }
+  appendMessage(sessionKey, message)
+}
+
 function upsertGroupMemberChatText(
   group: GroupChatView,
   runId: string,
@@ -2063,6 +2076,14 @@ function buildGroupRunHandlers(
           }
         }
       } else if (event.type === 'member_turn_event') {
+        if (event.taskId === null && group.mode === 'agent_team') {
+          if (event.event.type === 'text' && event.event.text.trim()) {
+            appendTeamSpeech(group, event.agentId, event.event.text.trim())
+          } else if (event.event.type === 'error' && event.event.fatal) {
+            appendSystemMessage(key, event.event.message)
+          }
+          return
+        }
         const memberKey =
           event.taskId === null
             ? groupRunMemberChatKey(groupId, runId, event.agentId)

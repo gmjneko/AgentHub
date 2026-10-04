@@ -17,6 +17,7 @@ import { GroupChatMember } from './entities/group-chat-member.entity.js'
 import { GroupMessage } from './entities/group-message.entity.js'
 import { GroupRun } from './entities/group-run.entity.js'
 import { GroupAttachment } from './entities/group-attachment.entity.js'
+import { GroupInboxMessage } from './entities/group-inbox-message.entity.js'
 import { BlackboardArtifactEntity } from './blackboard/entities/blackboard-artifact.entity.js'
 import { BlackboardDecisionEntity } from './blackboard/entities/blackboard-decision.entity.js'
 import { BlackboardContractEntity } from './blackboard/entities/blackboard-contract.entity.js'
@@ -42,6 +43,8 @@ import { GroupRunStream } from './run/group-run-stream.service.js'
 import { OrchestratorService } from './run/orchestrator.service.js'
 import { DispatchService } from './run/dispatch.service.js'
 import { MemberChatService } from './run/member-chat.service.js'
+import { AgentTeamRunService } from './run/agent-team-run.service.js'
+import { GroupInboxService } from './run/group-inbox.service.js'
 import { GroupRunExecutor } from './run/group-run.executor.js'
 import { OrchestratorMailboxService } from './run/orchestrator-mailbox.service.js'
 import { LlmOrchestratorExecutor, ORCHESTRATOR_PLANNER } from './run/orchestrator-executor.js'
@@ -74,6 +77,7 @@ import { AgentInteractionModule } from '../interactions/agent-interaction.module
             GroupMessage,
             GroupRun,
             GroupAttachment,
+            GroupInboxMessage,
             BlackboardArtifactEntity,
             BlackboardDecisionEntity,
             BlackboardContractEntity,
@@ -111,6 +115,8 @@ import { AgentInteractionModule } from '../interactions/agent-interaction.module
         OrchestratorService,
         DispatchService,
         MemberChatService,
+        GroupInboxService,
+        AgentTeamRunService,
         GroupRunExecutor,
         OrchestratorMailboxService,
         LlmOrchestratorExecutor,

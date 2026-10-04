@@ -2,6 +2,7 @@ import { ApiProperty } from '@nestjs/swagger'
 import type {
     AgentCapabilities,
     AgentVendor,
+    GroupChatMode,
     GroupChatStatus,
     GroupChatView,
     GroupMemberView,
@@ -12,6 +13,7 @@ import type {
 import { AgentCapabilitiesDto } from '../../dto/agent-response.dto.js'
 
 const VENDORS: AgentVendor[] = ['claude', 'codex']
+const GROUP_MODES: GroupChatMode[] = ['standard', 'agent_team']
 const GROUP_STATUSES: GroupChatStatus[] = ['active', 'archived']
 const PROJECT_STATUSES: ProjectStatus[] = ['planning', 'designing', 'development', 'done']
 
@@ -93,8 +95,22 @@ export class GroupChatViewDto implements GroupChatView {
     @ApiProperty({ description: '共享 git 工作区根目录' })
     workspaceDir!: string
 
-    @ApiProperty({ type: OrchestratorConfigViewDto, description: '独立 Orchestrator 配置' })
-    orchestrator!: OrchestratorConfigViewDto
+    @ApiProperty({ enum: GROUP_MODES, description: 'standard 或 agent_team' })
+    mode!: GroupChatMode
+
+    @ApiProperty({
+        type: String,
+        nullable: true,
+        description: 'Agent Team 队长 Agent id；普通群聊为 null'
+    })
+    leaderAgentId!: string | null
+
+    @ApiProperty({
+        type: OrchestratorConfigViewDto,
+        nullable: true,
+        description: '独立 Orchestrator 配置；Agent Team 为 null'
+    })
+    orchestrator!: OrchestratorConfigViewDto | null
 
     @ApiProperty({ type: [GroupMemberViewDto], description: '群成员' })
     members!: GroupMemberViewDto[]

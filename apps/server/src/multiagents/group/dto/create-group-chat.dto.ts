@@ -13,10 +13,13 @@ import {
 import type {
     AgentVendor,
     CreateGroupChatPayload,
+    GroupChatMode,
     OrchestratorConfigInput,
     ProjectMetaInput,
     ProjectStatus
 } from '@agenthub/shared'
+
+const GROUP_MODES: GroupChatMode[] = ['standard', 'agent_team']
 
 const VENDORS: AgentVendor[] = ['claude', 'codex']
 const PROJECT_STATUSES: ProjectStatus[] = ['planning', 'designing', 'development', 'done']
@@ -73,11 +76,31 @@ export class CreateGroupChatDto implements CreateGroupChatPayload {
     @IsString({ each: true })
     memberAgentIds!: string[]
 
-    @ApiProperty({ type: OrchestratorConfigInputDto, description: '独立 Orchestrator 配置' })
+    @ApiPropertyOptional({
+        enum: GROUP_MODES,
+        description: 'standard 为 Orchestrator 群聊；agent_team 为成员队长 + Inbox'
+    })
+    @IsOptional()
+    @IsIn(GROUP_MODES)
+    mode?: GroupChatMode
+
+    @ApiPropertyOptional({
+        type: String,
+        description: 'Agent Team 队长 Agent id，必须属于 memberAgentIds'
+    })
+    @IsOptional()
+    @IsString()
+    leaderAgentId?: string
+
+    @ApiPropertyOptional({
+        type: OrchestratorConfigInputDto,
+        description: '独立 Orchestrator 配置；agent_team 不传'
+    })
+    @IsOptional()
     @IsObject()
     @ValidateNested()
     @Type(() => OrchestratorConfigInputDto)
-    orchestrator!: OrchestratorConfigInputDto
+    orchestrator?: OrchestratorConfigInputDto
 
     @ApiProperty({ type: ProjectMetaInputDto, description: '项目元信息' })
     @IsObject()

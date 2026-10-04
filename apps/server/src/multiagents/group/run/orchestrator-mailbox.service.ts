@@ -104,7 +104,7 @@ export class OrchestratorMailboxService {
             throw new Error('ask_user requires at least one question')
         }
         const requestId = randomUUID()
-        const vendor: AgentVendor = ctx.group.orchestratorVendor
+        const vendor: AgentVendor = ctx.group.orchestratorVendor!
         const event: AgentInteractionEvent = {
             type: 'user_input_request',
             vendor,
@@ -187,13 +187,13 @@ export class OrchestratorMailboxService {
         const group = (await this.groupRepo.findOneBy({ id: ctx.group.id })) ?? ctx.group
         const provider = await this.providers.resolveRuntimeConfig(
             ctx.userId,
-            group.orchestratorProviderId
+            group.orchestratorProviderId!
         )
         const home = this.workspace.memberHomeDir(group.id, 'orchestrator', group.workspaceDir)
-        await this.agentWorkspace.ensureAgentHomeDirectory(group.orchestratorVendor, home)
+        await this.agentWorkspace.ensureAgentHomeDirectory(group.orchestratorVendor!, home)
         const config: AgentAdapterConfig = {
             id: `orch-${group.id}`,
-            model: group.orchestratorModel,
+            model: group.orchestratorModel!,
             agentHomeDirectory: home,
             workingDirectory: home,
             apiKey: provider.apiKey,
@@ -215,8 +215,8 @@ export class OrchestratorMailboxService {
 
         return withControlMcp(['send_to_member', 'ask_user'], undefined, async (control) => {
             const adapter = createAgent(
-                group.orchestratorVendor,
-                applyControlMcpConfig(config, group.orchestratorVendor, control, 'mailbox')
+                group.orchestratorVendor!,
+                applyControlMcpConfig(config, group.orchestratorVendor!, control, 'mailbox')
             )
             if (group.orchestratorSessionId) adapter.resumeWith(group.orchestratorSessionId)
             let asks = 0

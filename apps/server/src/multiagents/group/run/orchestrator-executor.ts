@@ -209,8 +209,8 @@ export class LlmOrchestratorExecutor implements OrchestratorExecutor {
         } catch (err) {
             throw BusinessException.upstream('Orchestrator LLM decision failed', {
                 groupId: req.group.id,
-                providerId: req.group.orchestratorProviderId,
-                model: req.group.orchestratorModel,
+                providerId: req.group.orchestratorProviderId!,
+                model: req.group.orchestratorModel!,
                 error: this.errMsg(err)
             })
         }
@@ -244,21 +244,21 @@ export class LlmOrchestratorExecutor implements OrchestratorExecutor {
     private async runOrchestrator(req: DecisionRequest): Promise<OrchestratorRunResult> {
         const provider = await this.providers.resolveRuntimeConfig(
             req.userId,
-            req.group.orchestratorProviderId
+            req.group.orchestratorProviderId!
         )
         const home = this.workspace.memberHomeDir(
             req.group.id,
             'orchestrator',
             req.group.workspaceDir
         )
-        await this.agentWorkspace.ensureAgentHomeDirectory(req.group.orchestratorVendor, home)
+        await this.agentWorkspace.ensureAgentHomeDirectory(req.group.orchestratorVendor!, home)
 
         // Orchestrator 只提交计划，不该读写真实仓库：cwd 指向 home scratch。
         // 计划回合注入 submit_orchestrator_plan + ask_user。Claude 用 allowedTools 收口。
         // Codex 用 mailbox 模式（bypassPermissions）：plan 只读沙箱会取消写 sink 的 MCP 调用。
         const config: AgentAdapterConfig = {
             id: `orch-${req.group.id}`,
-            model: req.group.orchestratorModel,
+            model: req.group.orchestratorModel!,
             agentHomeDirectory: home,
             workingDirectory: home,
             apiKey: provider.apiKey,
@@ -271,9 +271,9 @@ export class LlmOrchestratorExecutor implements OrchestratorExecutor {
         this.debug.log('group.orchestrator_executor.prompt', {
             groupId: req.group.id,
             userId: req.userId,
-            vendor: req.group.orchestratorVendor,
-            model: req.group.orchestratorModel,
-            providerId: req.group.orchestratorProviderId,
+            vendor: req.group.orchestratorVendor!,
+            model: req.group.orchestratorModel!,
+            providerId: req.group.orchestratorProviderId!,
             resumedSdkSessionId: req.group.orchestratorSessionId ?? null,
             workingDirectory: config.workingDirectory,
             systemPrompt: ORCHESTRATOR_SYSTEM_PROMPT,
@@ -285,7 +285,7 @@ export class LlmOrchestratorExecutor implements OrchestratorExecutor {
             async (control) => {
                 const adapter = this.createOrchestratorAdapter(
                     req,
-                    applyControlMcpConfig(config, req.group.orchestratorVendor, control, 'mailbox')
+                    applyControlMcpConfig(config, req.group.orchestratorVendor!, control, 'mailbox')
                 )
                 let nextPrompt = prompt
                 for (let ask = 0; ask < 3; ask += 1) {
@@ -325,7 +325,7 @@ export class LlmOrchestratorExecutor implements OrchestratorExecutor {
     }
 
     private createOrchestratorAdapter(req: DecisionRequest, config: AgentAdapterConfig): AgentAdapter {
-        const adapter = createAgent(req.group.orchestratorVendor, config)
+        const adapter = createAgent(req.group.orchestratorVendor!, config)
         if (req.group.orchestratorSessionId) {
             adapter.resumeWith(req.group.orchestratorSessionId)
         }

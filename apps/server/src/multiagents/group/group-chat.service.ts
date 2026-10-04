@@ -24,9 +24,11 @@ import { BlackboardContractEntity } from './blackboard/entities/blackboard-contr
 import { BlackboardTaskEntity } from './blackboard/entities/blackboard-task.entity.js'
 import { BlackboardEventEntity } from './blackboard/entities/blackboard-event.entity.js'
 import { AgentMemoryItemEntity } from './memory/entities/agent-memory-item.entity.js'
+import { GroupInboxMessage } from './entities/group-inbox-message.entity.js'
 import { GroupWorkspaceService } from './group-workspace.service.js'
 import { WorkspaceDiffService } from '../workspace/workspace-diff.service.js'
 import { GroupRunStream } from './run/group-run-stream.service.js'
+import { resolveGroupChatCreate } from './run/agent-team-create.js'
 import { toGroupChatView } from './mappers/group-chat.mapper.js'
 import { UserWorkspaceService } from '../../user-workspace/user-workspace.service.js'
 
@@ -63,6 +65,7 @@ export class GroupChatService {
         if (memberAgentIds.length === 0) {
             throw BusinessException.badRequest('A group chat needs at least one member Agent')
         }
+        const created = resolveGroupChatCreate({ ...payload, memberAgentIds })
         const agents = await this.agentRepo.find({
             where: { userId, id: In(memberAgentIds) }
         })
@@ -70,7 +73,7 @@ export class GroupChatService {
             throw BusinessException.badRequest('Some member Agents do not exist or are not yours')
         }
 
-        await this.assertOrchestratorValid(userId, payload.orchestrator)
+        if (created.orchestrator) await this.assertOrchestratorValid(userId, created.orchestrator)
 
         const projectMeta = payload.projectMeta
         const projectName = projectMeta?.name?.trim()
@@ -83,9 +86,11 @@ export class GroupChatService {
             isPinned: false,
             archivedAt: null,
             workspaceDir: '',
-            orchestratorVendor: payload.orchestrator.vendor,
-            orchestratorModel: payload.orchestrator.model,
-            orchestratorProviderId: payload.orchestrator.providerId,
+            mode: created.mode,
+            leaderAgentId: created.leaderAgentId,
+            orchestratorVendor: created.orchestrator?.vendor ?? null,
+            orchestratorModel: created.orchestrator?.model ?? null,
+            orchestratorProviderId: created.orchestrator?.providerId ?? null,
             projectName,
             projectGoal: projectMeta.goal?.trim() ? projectMeta.goal.trim() : null,
             projectTechStack: projectMeta.techStack ?? [],
@@ -226,6 +231,7 @@ export class GroupChatService {
             await m.delete(BlackboardTaskEntity, { groupChatId: group.id })
             await m.delete(BlackboardEventEntity, { groupChatId: group.id })
             await m.delete(AgentMemoryItemEntity, { scopeProject: group.id })
+            await m.delete(GroupInboxMessage, { groupId: group.id })
             await m.delete(GroupChat, { id: group.id, userId })
         })
         await this.workspace.removeWorkspace(group.id, group.workspaceDir)
@@ -291,7 +297,7 @@ export class GroupChatService {
 
     private async assertOrchestratorValid(
         userId: string,
-        orchestrator: CreateGroupChatPayload['orchestrator']
+        orchestrator: NonNullable<CreateGroupChatPayload['orchestrator']>
     ): Promise<void> {
         let provider
         try {

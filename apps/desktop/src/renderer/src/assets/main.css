@@ -57,10 +57,11 @@ body {
   user-select: none;
 }
 
-/* Rendered markdown body (agent / other-party message bubbles). Class is
-   specific enough to stay namespaced; colors map to design-system tokens
-   (primary / gray-* / surface-border). Shared by TextMessage & AgentRunMessage. */
+/* Rendered markdown in the document transcript. Tailwind preflight strips
+   list markers / heading size; these rules put them back and keep code/tables
+   readable on the page canvas (not a bubble). Shared by TextMessage & AgentRunMessage. */
 .markdown-body {
+  overflow-x: auto;
   font-weight: 500;
   line-height: 1.6;
   word-break: break-word;
@@ -102,14 +103,39 @@ body {
 .markdown-body ul,
 .markdown-body ol {
   margin: 0 0 8px;
-  padding-left: 20px;
+  padding-left: 1.5em;
+}
+.markdown-body ul {
+  list-style-type: disc;
+}
+.markdown-body ol {
+  list-style-type: decimal;
+}
+.markdown-body ul ul {
+  list-style-type: circle;
+}
+.markdown-body ul ul ul {
+  list-style-type: square;
+}
+.markdown-body ol ol {
+  list-style-type: lower-alpha;
 }
 .markdown-body li {
+  display: list-item;
   margin: 2px 0;
+}
+.markdown-body li::marker {
+  color: #646a73;
 }
 .markdown-body li > ul,
 .markdown-body li > ol {
   margin: 2px 0;
+}
+.markdown-body li > p {
+  margin: 0 0 4px;
+}
+.markdown-body li > p:last-child {
+  margin-bottom: 0;
 }
 .markdown-body a {
   color: #3370ff;
@@ -121,7 +147,7 @@ body {
 .markdown-body code {
   padding: 1px 5px;
   border-radius: 4px;
-  background: #f2f3f5;
+  background: #eaecef;
   font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
   font-size: 12px;
 }
@@ -130,19 +156,21 @@ body {
   padding: 10px 12px;
   border: 1px solid #dee0e3;
   border-radius: 8px;
-  background: #f8f9fa;
+  background: #ffffff;
   overflow-x: auto;
+  white-space: pre;
 }
 .markdown-body pre code {
   padding: 0;
   background: transparent;
   font-size: 12px;
   line-height: 1.5;
+  white-space: inherit;
 }
 .markdown-body blockquote {
   margin: 0 0 8px;
   padding: 2px 12px;
-  border-left: 3px solid #dee0e3;
+  border-left: 3px solid #c4c8cf;
   color: #646a73;
 }
 .markdown-body hr {
@@ -153,6 +181,7 @@ body {
 .markdown-body table {
   margin: 0 0 8px;
   border-collapse: collapse;
+  background: #ffffff;
 }
 .markdown-body th,
 .markdown-body td {
@@ -162,6 +191,11 @@ body {
 .markdown-body th {
   background: #f2f3f5;
   font-weight: 600;
+}
+.markdown-body s,
+.markdown-body del {
+  text-decoration: line-through;
+  color: #646a73;
 }
 .markdown-body img {
   max-width: 100%;

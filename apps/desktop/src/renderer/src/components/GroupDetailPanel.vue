@@ -57,6 +57,16 @@ function memberRole(member: GroupMemberView): string {
   return member.roleInGroup?.trim() || vendorLabel(member.vendor)
 }
 
+function isTeamLeader(member: GroupMemberView): boolean {
+  return props.group?.mode === 'agent_team' && props.group.leaderAgentId === member.agentId
+}
+
+const leaderName = computed(() => {
+  const group = props.group
+  if (!group) return ''
+  return group.members.find((member) => member.agentId === group.leaderAgentId)?.name ?? '未指定'
+})
+
 const isInspector = computed(() => props.mode === 'inspector')
 const bodyGridClass = computed(() =>
   isInspector.value ? 'grid-cols-1' : 'xl:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]'
@@ -82,7 +92,9 @@ const visibleArtifacts = computed(
     </template>
 
     <template v-else-if="group && isInspector">
-      <header class="flex h-12 flex-shrink-0 items-center gap-3 border-b border-surface-border px-4">
+      <header
+        class="flex h-12 flex-shrink-0 items-center gap-3 border-b border-surface-border px-4"
+      >
         <GroupAvatar :members="group.members" :title="group.title" size="sm" />
         <div class="min-w-0 flex-1">
           <h2 class="truncate text-md font-semibold text-text-main">{{ group.title }}</h2>
@@ -127,13 +139,27 @@ const visibleArtifacts = computed(
                     size="sm"
                   />
                   <div class="min-w-0">
-                    <div class="truncate text-sm font-medium text-text-main">{{ member.name }}</div>
+                    <div class="flex min-w-0 items-center gap-1.5">
+                      <div class="truncate text-sm font-medium text-text-main">
+                        {{ member.name }}
+                      </div>
+                      <span
+                        v-if="isTeamLeader(member)"
+                        class="shrink-0 rounded bg-primary-soft px-1 py-0.5 text-[10px] font-medium text-primary"
+                      >
+                        队长
+                      </span>
+                    </div>
                     <div class="truncate text-xs text-text-muted">{{ memberRole(member) }}</div>
                   </div>
                 </div>
               </div>
             </div>
-            <div>
+            <div v-if="group.mode === 'agent_team'">
+              <div class="font-medium text-text-muted">队长</div>
+              <div class="mt-0.5 break-words text-text-main">{{ leaderName }}</div>
+            </div>
+            <div v-else-if="group.orchestrator">
               <div class="font-medium text-text-muted">Orchestrator</div>
               <div class="mt-0.5 break-words text-text-main">
                 {{ vendorLabel(group.orchestrator.vendor) }} / {{ group.orchestrator.model }}
@@ -245,7 +271,7 @@ const visibleArtifacts = computed(
               <span
                 class="flex-shrink-0 rounded bg-primary-soft px-1.5 py-0.5 text-xs font-medium text-primary"
               >
-                群聊
+                {{ group.mode === 'agent_team' ? 'Agent Team' : '群聊' }}
               </span>
             </div>
             <div class="mt-1 truncate text-sm text-text-muted">
@@ -310,8 +336,16 @@ const visibleArtifacts = computed(
                     size="sm"
                   />
                   <div class="min-w-0">
-                    <div class="truncate text-base font-medium text-text-main">
-                      {{ member.name }}
+                    <div class="flex min-w-0 items-center gap-1.5">
+                      <div class="truncate text-base font-medium text-text-main">
+                        {{ member.name }}
+                      </div>
+                      <span
+                        v-if="isTeamLeader(member)"
+                        class="shrink-0 rounded bg-primary-soft px-1 py-0.5 text-[10px] font-medium text-primary"
+                      >
+                        队长
+                      </span>
                     </div>
                     <div class="truncate text-sm text-text-muted">{{ memberRole(member) }}</div>
                     <p
@@ -368,7 +402,11 @@ const visibleArtifacts = computed(
             <section class="rounded-md border border-surface-border bg-white p-4">
               <h3 class="mb-3 text-md font-semibold text-text-main">群设置</h3>
               <div class="space-y-3 text-sm">
-                <div>
+                <div v-if="group.mode === 'agent_team'">
+                  <div class="font-medium text-text-muted">队长</div>
+                  <div class="mt-0.5 break-words text-text-main">{{ leaderName }}</div>
+                </div>
+                <div v-else-if="group.orchestrator">
                   <div class="font-medium text-text-muted">Orchestrator</div>
                   <div class="mt-0.5 break-words text-text-main">
                     {{ vendorLabel(group.orchestrator.vendor) }} / {{ group.orchestrator.model }}
@@ -385,9 +423,7 @@ const visibleArtifacts = computed(
 
             <section class="rounded-md border border-surface-border bg-white p-4">
               <h3 class="mb-3 text-md font-semibold text-text-main">产出物</h3>
-              <p v-if="visibleArtifacts.length === 0" class="text-sm text-text-muted">
-                暂无产出物
-              </p>
+              <p v-if="visibleArtifacts.length === 0" class="text-sm text-text-muted">暂无产出物</p>
               <div v-else class="space-y-2">
                 <button
                   v-for="artifact in visibleArtifacts"
