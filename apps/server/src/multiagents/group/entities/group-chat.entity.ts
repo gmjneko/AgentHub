@@ -44,7 +44,7 @@ export class GroupChat {
     @Column({ type: 'varchar', length: 1024 })
     workspaceDir!: string
 
-    /** standard：Orchestrator 编排。agent_team：成员队长 + Inbox。 */
+    /** standard：DAG Orchestrator；agent_team：成员队长 + Inbox；issues：Issue 协作。 */
     @Column({ type: 'varchar', length: 16, default: 'standard' })
     mode!: GroupChatMode
 

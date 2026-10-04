@@ -30,7 +30,8 @@ export function toProjectMeta(group: GroupChat): ProjectMeta {
 export function toGroupChatView(
     group: GroupChat,
     members: Array<{ member: GroupChatMember; agent: Agent }>,
-    activeRunId: string | null
+    activeRunId: string | null,
+    activeIssueRunIds: string[] = []
 ): GroupChatView {
     return {
         id: group.id,
@@ -52,6 +53,7 @@ export function toGroupChatView(
         members: members.map(({ member, agent }) => toGroupMemberView(member, agent)),
         projectMeta: toProjectMeta(group),
         activeRunId,
+        ...(activeIssueRunIds.length > 0 ? { activeIssueRunIds } : {}),
         createdAt: group.createdAt.toISOString(),
         updatedAt: group.updatedAt.toISOString()
     }

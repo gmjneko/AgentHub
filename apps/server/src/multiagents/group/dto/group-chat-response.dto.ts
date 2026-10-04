@@ -10,10 +10,11 @@ import type {
     ProjectMeta,
     ProjectStatus
 } from '@agenthub/shared'
+import type { GroupIssueView } from '@agenthub/shared'
 import { AgentCapabilitiesDto } from '../../dto/agent-response.dto.js'
 
 const VENDORS: AgentVendor[] = ['claude', 'codex']
-const GROUP_MODES: GroupChatMode[] = ['standard', 'agent_team']
+const GROUP_MODES: GroupChatMode[] = ['standard', 'agent_team', 'issues']
 const GROUP_STATUSES: GroupChatStatus[] = ['active', 'archived']
 const PROJECT_STATUSES: ProjectStatus[] = ['planning', 'designing', 'development', 'done']
 
@@ -95,7 +96,7 @@ export class GroupChatViewDto implements GroupChatView {
     @ApiProperty({ description: '共享 git 工作区根目录' })
     workspaceDir!: string
 
-    @ApiProperty({ enum: GROUP_MODES, description: 'standard 或 agent_team' })
+    @ApiProperty({ enum: GROUP_MODES, description: 'standard、agent_team 或 issues' })
     mode!: GroupChatMode
 
     @ApiProperty({
@@ -124,6 +125,12 @@ export class GroupChatViewDto implements GroupChatView {
         description: '进行中的群运行 id；空闲为 null。前端据此订阅进行中运行'
     })
     activeRunId!: string | null
+
+    @ApiProperty({ type: [String], required: false, description: 'issues 模式下的活动 Issue run ids' })
+    activeIssueRunIds?: string[]
+
+    @ApiProperty({ type: [Object], required: false, description: 'issues 模式下的 Issue 摘要' })
+    issueSummaries?: GroupIssueView[]
 
     @ApiProperty({ description: '创建时间，ISO8601' })
     createdAt!: string

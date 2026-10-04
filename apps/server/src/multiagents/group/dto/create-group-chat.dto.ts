@@ -19,7 +19,7 @@ import type {
     ProjectStatus
 } from '@agenthub/shared'
 
-const GROUP_MODES: GroupChatMode[] = ['standard', 'agent_team']
+const GROUP_MODES: GroupChatMode[] = ['standard', 'agent_team', 'issues']
 
 const VENDORS: AgentVendor[] = ['claude', 'codex']
 const PROJECT_STATUSES: ProjectStatus[] = ['planning', 'designing', 'development', 'done']
@@ -78,7 +78,7 @@ export class CreateGroupChatDto implements CreateGroupChatPayload {
 
     @ApiPropertyOptional({
         enum: GROUP_MODES,
-        description: 'standard 为 Orchestrator 群聊；agent_team 为成员队长 + Inbox'
+        description: 'standard 为 DAG Orchestrator；agent_team 为成员队长 + Inbox；issues 为 Issue 协作'
     })
     @IsOptional()
     @IsIn(GROUP_MODES)

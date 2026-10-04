@@ -12,6 +12,11 @@ import type {
     GroupAttachmentView,
     GroupChatView,
     GroupMessageView,
+    GroupIssueView,
+    GroupIssueCommentView,
+    CreateGroupIssuePayload,
+    UpdateGroupIssuePayload,
+    CreateGroupIssueCommentPayload,
     GroupRunEvent,
     UpdateGroupChatPayload,
     WorkspaceCommitPayload,
@@ -34,6 +39,8 @@ import { WorkspaceDiffService } from '../workspace/workspace-diff.service.js'
 import { DeploymentService } from './deployment/deployment.service.js'
 import { BusinessException } from '../../common/index.js'
 import { UpdateGroupMessageDto } from './dto/update-group-message.dto.js'
+import { GroupIssueService } from './group-issue.service.js'
+import { IssueRuntimeService } from './run/issue-runtime.service.js'
 
 /**
  * GroupChatManager — 群聊领域的对外门面（控制器只依赖它，委派给聚焦服务）。
@@ -51,7 +58,9 @@ export class GroupChatManager {
         private readonly workspaceDiff: WorkspaceDiffService,
         private readonly deployments: DeploymentService,
         private readonly runStream: GroupRunStream,
-        private readonly executor: GroupRunExecutor
+        private readonly executor: GroupRunExecutor,
+        private readonly issues: GroupIssueService,
+        private readonly issueRuntime: IssueRuntimeService
     ) {}
 
     createGroupChat(userId: string, payload: CreateGroupChatPayload): Promise<GroupChatView> {
@@ -125,7 +134,9 @@ export class GroupChatManager {
         payload: WorkspaceCommitPayload
     ): Promise<WorkspaceCommitResult> {
         const group = await this.groupChat.loadGroup(userId, groupId)
-        const activeRunId = await this.runStream.getActiveRun(group.id)
+        const activeRunId = group.mode === 'issues'
+            ? [...(await this.runStream.getActiveIssueRuns(group.id)).values()][0] ?? null
+            : await this.runStream.getActiveRun(group.id)
         if (activeRunId) {
             throw BusinessException.conflict(
                 `Group ${group.id} is busy with active run ${activeRunId}`,
@@ -160,6 +171,54 @@ export class GroupChatManager {
         return this.executor.abortRun(userId, groupId, runId)
     }
 
+    async listIssues(userId: string, groupId: string, status?: string, assigneeId?: string): Promise<GroupIssueView[]> {
+        const group = await this.groupChat.loadGroup(userId, groupId)
+        return this.issues.list(group, status, assigneeId)
+    }
+
+    async getIssue(userId: string, groupId: string, issueId: string): Promise<GroupIssueView> {
+        const group = await this.groupChat.loadGroup(userId, groupId)
+        const issue = await this.issues.get(group, issueId)
+        return this.issues.view(issue)
+    }
+
+    async createIssue(userId: string, groupId: string, payload: CreateGroupIssuePayload): Promise<GroupIssueView> {
+        const group = await this.groupChat.loadGroup(userId, groupId)
+        const issue = await this.issues.create(group, userId, payload)
+        await this.issueRuntime.createIssueRun(group, userId, issue.id, `${issue.title}\n${issue.description ?? ''}`)
+        return issue
+    }
+
+    async updateIssue(userId: string, groupId: string, issueId: string, payload: UpdateGroupIssuePayload): Promise<GroupIssueView> {
+        const group = await this.groupChat.loadGroup(userId, groupId)
+        const issue = await this.issues.update(group, userId, issueId, payload)
+        if (payload.assigneeType !== undefined || payload.assigneeId !== undefined) {
+            this.issueRuntime.trigger(group, userId, issue.id, `Issue 已分配：${issue.title}`, issue.assigneeType === 'agent' && issue.assigneeId ? [issue.assigneeId] : ['orchestrator'])
+        }
+        return issue
+    }
+
+    async listIssueComments(userId: string, groupId: string, issueId: string): Promise<GroupIssueCommentView[]> {
+        const group = await this.groupChat.loadGroup(userId, groupId)
+        return this.issues.comments(group, issueId)
+    }
+
+    async addIssueComment(userId: string, groupId: string, issueId: string, payload: CreateGroupIssueCommentPayload): Promise<GroupIssueCommentView> {
+        const group = await this.groupChat.loadGroup(userId, groupId)
+        const comment = await this.issues.addUserComment(group, userId, issueId, payload)
+        const issue = await this.issues.get(group, issueId)
+        const targets = comment.mentions.length > 0 ? comment.mentions : issue.assigneeType === 'agent' && issue.assigneeId ? [issue.assigneeId] : ['orchestrator']
+        this.issueRuntime.trigger(group, userId, issueId, comment.body, targets)
+        return comment
+    }
+
+    async convertMessageToIssue(userId: string, groupId: string, messageId: string): Promise<GroupIssueView> {
+        const group = await this.groupChat.loadGroup(userId, groupId)
+        const issue = await this.issues.convertMessage(group, userId, messageId)
+        this.issueRuntime.trigger(group, userId, issue.id, `${issue.title}\n${issue.description ?? ''}`, ['orchestrator'])
+        return issue
+    }
+
     async getBlackboard(userId: string, groupId: string): Promise<BlackboardView> {
         await this.groupChat.loadGroup(userId, groupId)
         return this.blackboard.getState(groupId)
@@ -184,7 +243,9 @@ export class GroupChatManager {
         if (group.status === 'archived' || group.archivedAt) {
             throw BusinessException.forbidden('Archived group chat is read-only')
         }
-        const activeRunId = await this.runStream.getActiveRun(group.id)
+        const activeRunId = group.mode === 'issues'
+            ? [...(await this.runStream.getActiveIssueRuns(group.id)).values()][0] ?? null
+            : await this.runStream.getActiveRun(group.id)
         if (activeRunId) {
             throw BusinessException.conflict(
                 `Group ${group.id} is busy with active run ${activeRunId}`,

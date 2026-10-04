@@ -22,6 +22,10 @@ export class GroupRun {
     @Column({ type: 'varchar', length: 36 })
     groupChatId!: string
 
+    @Index()
+    @Column({ type: 'varchar', length: 36, nullable: true })
+    issueId!: string | null
+
     @Column({ type: 'varchar', length: 16, default: 'running' })
     status!: GroupRunStatus
 

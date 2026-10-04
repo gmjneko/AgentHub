@@ -171,7 +171,7 @@ function setMode(mode: GroupChatMode): void {
 function buildPayload(): CreateGroupChatPayload | string {
   if (!form.title.trim()) return '请填写群标题'
   if (form.memberIds.size === 0) return '请至少选择一个成员 Agent'
-  if (form.mode === 'standard') {
+  if (form.mode !== 'agent_team') {
     if (!form.orchestratorProviderId) return '请为 Orchestrator 选择 Provider'
     if (!form.orchestratorModel.trim()) return '请为 Orchestrator 选择模型'
   } else if (!form.leaderAgentId || !form.memberIds.has(form.leaderAgentId)) {
@@ -249,8 +249,8 @@ function onWorkspacePicked(paths: string[]): void {
 
       <div>
         <label class="block text-sm font-medium text-text-main mb-1.5">协作方式</label>
-        <div class="grid grid-cols-2 gap-2">
-          <button
+        <div class="grid grid-cols-3 gap-2">
+            <button
             type="button"
             class="rounded-md border px-3 py-2 text-left transition-colors"
             :class="
@@ -262,7 +262,16 @@ function onWorkspacePicked(paths: string[]): void {
           >
             <span class="block text-sm font-medium">普通群聊</span>
             <span class="mt-0.5 block text-xs text-text-muted">Orchestrator 拆任务并验收</span>
-          </button>
+            </button>
+            <button
+              type="button"
+              class="rounded-md border px-3 py-2 text-left"
+              :class="form.mode === 'issues' ? 'border-primary bg-primary-soft' : 'border-border'"
+              @click="setMode('issues')"
+            >
+              <div class="font-medium">Issues</div>
+              <div class="text-xs text-text-muted">按 Issue、评论和 @ 协作</div>
+            </button>
           <button
             type="button"
             class="rounded-md border px-3 py-2 text-left transition-colors"
@@ -332,7 +341,7 @@ function onWorkspacePicked(paths: string[]): void {
         </div>
       </div>
 
-      <div v-if="form.mode === 'standard'" class="rounded-md bg-surface-hover p-3">
+      <div v-if="form.mode !== 'agent_team'" class="rounded-md bg-surface-hover p-3">
         <div class="mb-2 flex items-center gap-1.5 text-sm font-medium text-text-main">
           <span class="material-symbols-outlined text-xl text-accent">hub</span>
           Orchestrator（独立编排者）

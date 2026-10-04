@@ -53,6 +53,13 @@ export function groupMessageToDisplay(
   if (view.kind === 'system') {
     return { ...base, kind: 'system', text: view.text }
   }
+  if (view.kind === 'issue-event') {
+    return {
+      ...base,
+      kind: 'system',
+      text: view.summary ? `Issue「${view.title}」：${view.summary}` : `Issue「${view.title}」已更新`
+    }
+  }
   const sender = resolveSender(view, members, currentUserSender)
   if (view.kind === 'task-list') {
     return { ...base, kind: 'task-list', sender, heading: view.heading, tasks: view.tasks }

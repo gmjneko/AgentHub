@@ -29,7 +29,7 @@ apps/server/
     ├── platform-provider/            # 用户自建模型平台（Provider）管理（详见「Provider 管理模块」）
     ├── user-workspace/               # 按用户隔离的服务器文件空间：skills/session/agent_home/agent_workspace
     ├── workspace-fs/                 # 服务端目录浏览 + 本地 Skill 上传（详见「服务端目录浏览模块」）
-    └── multiagents/                  # Agent 配置 + 单聊 turn runtime + 群聊协作（详见「多 Agent 管理模块」「群聊协作模块」）
+    └── multiagents/                  # Agent 配置 + 单聊 turn runtime + 群聊协作（含 standard DAG、agent_team、issues）
 ```
 
 ### `common/` —— 跨模块基建

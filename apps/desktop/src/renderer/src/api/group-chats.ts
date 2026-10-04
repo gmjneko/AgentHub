@@ -15,6 +15,11 @@ import {
   type GroupChatView,
   type GroupMessageView,
   type GroupRunEvent,
+  type GroupIssueView,
+  type GroupIssueCommentView,
+  type CreateGroupIssuePayload,
+  type UpdateGroupIssuePayload,
+  type CreateGroupIssueCommentPayload,
   type StartDeploymentPayload,
   type StartGroupRunResult,
   type UpdateGroupChatPayload,
@@ -245,6 +250,25 @@ export const groupChatApi = {
     ),
   getBlackboardEvents: (id: string) =>
     http.get<BlackboardEventView[]>(`/group-chats/${id}/blackboard/events`),
+  listIssues: (id: string, params?: { status?: string; assigneeId?: string }) => {
+    const query = new URLSearchParams()
+    if (params?.status) query.set('status', params.status)
+    if (params?.assigneeId) query.set('assigneeId', params.assigneeId)
+    const suffix = query.toString() ? `?${query.toString()}` : ''
+    return http.get<GroupIssueView[]>(`/group-chats/${id}/issues${suffix}`)
+  },
+  getIssue: (id: string, issueId: string) =>
+    http.get<GroupIssueView>(`/group-chats/${id}/issues/${issueId}`),
+  createIssue: (id: string, payload: CreateGroupIssuePayload) =>
+    http.post<GroupIssueView>(`/group-chats/${id}/issues`, payload),
+  updateIssue: (id: string, issueId: string, payload: UpdateGroupIssuePayload) =>
+    http.patch<GroupIssueView>(`/group-chats/${id}/issues/${issueId}`, payload),
+  listIssueComments: (id: string, issueId: string) =>
+    http.get<GroupIssueCommentView[]>(`/group-chats/${id}/issues/${issueId}/comments`),
+  addIssueComment: (id: string, issueId: string, payload: CreateGroupIssueCommentPayload) =>
+    http.post<GroupIssueCommentView>(`/group-chats/${id}/issues/${issueId}/comments`, payload),
+  convertMessageToIssue: (id: string, messageId: string) =>
+    http.post<GroupIssueView>(`/group-chats/${id}/messages/${messageId}/issue`, {}),
   /** Start a service deployment from a deploy card's manifest. */
   startDeployment: (id: string, payload: StartDeploymentPayload) =>
     http.post<DeploymentView>(`/group-chats/${id}/deployments`, payload),

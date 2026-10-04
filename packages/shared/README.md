@@ -18,6 +18,7 @@ packages/shared/
     ├── agent.ts          # 单 Agent 契约：AgentView、聊天、事件、能力、payload
     ├── chat.ts           # 渲染层聊天/消息视图类型 + AgentHubApi 接口
     ├── group-chat.ts     # 群聊契约：成员、Orchestrator、运行事件 SSE 流
+    ├── issues.ts         # 群内 Issue、评论与 Issue action 契约
     ├── blackboard.ts     # 群黑板契约：产物、决策、契约、task graph、memory
     ├── deployment.ts     # 部署清单 + 线上服务部署生命周期与日志事件
     ├── workspace-diff.ts # 工作区 git diff 摘要 + 提交结果类型

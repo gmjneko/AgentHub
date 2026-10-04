@@ -9,6 +9,7 @@ export type GroupMessageKind =
     | 'options'
     | 'agent-question'
     | 'deploy'
+    | 'issue-event'
 
 /**
  * GroupMessage — 群聊展示层 presentation_log（给人看 / 审计），多发言者。

@@ -135,6 +135,32 @@ export class GroupMessageService {
         return toGroupMessageView(saved)
     }
 
+    async appendIssueEvent(
+        groupId: string,
+        userId: string,
+        payload: {
+            issueId: string
+            event: 'created' | 'assigned' | 'status' | 'comment'
+            title: string
+            status?: string
+            summary?: string
+        }
+    ): Promise<GroupMessageView> {
+        const saved = await this.messageRepo.save(
+            this.messageRepo.create({
+                groupChatId: groupId,
+                userId,
+                kind: 'issue-event',
+                senderRole: 'system',
+                senderAgentId: null,
+                text: payload.summary ?? null,
+                payload,
+                pinned: false
+            })
+        )
+        return toGroupMessageView(saved)
+    }
+
     async appendTaskList(
         groupId: string,
         userId: string,

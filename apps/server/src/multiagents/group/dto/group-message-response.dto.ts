@@ -9,7 +9,7 @@ import type {
 } from '@agenthub/shared'
 
 const SENDER_ROLES: GroupSenderRole[] = ['user', 'orchestrator', 'agent', 'system']
-const MESSAGE_KINDS = ['text', 'system', 'task-list', 'options', 'agent-question', 'deploy'] as const
+const MESSAGE_KINDS = ['text', 'system', 'task-list', 'options', 'agent-question', 'deploy', 'issue-event'] as const
 
 /**
  * 群聊展示层消息（多发言者）。运行时是 text/system/task-list/options 的判别联合；
@@ -87,6 +87,11 @@ export class GroupMessageViewDto {
 
     @ApiProperty({ required: false, description: 'agent-question 已作答时用户提交的拼接回复' })
     answerText?: string
+
+    @ApiProperty({ required: false }) issueId?: string
+    @ApiProperty({ required: false }) event?: string
+    @ApiProperty({ required: false }) title?: string
+    @ApiProperty({ required: false }) status?: string
 
     @ApiProperty({
         required: false,

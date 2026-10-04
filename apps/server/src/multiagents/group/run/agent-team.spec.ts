@@ -78,6 +78,17 @@ test('resolveGroupChatCreate accepts a standard group and an agent team leader',
     assert.equal(team.orchestrator, null)
 })
 
+test('resolveGroupChatCreate accepts an issues group with an orchestrator', () => {
+    const issues = resolveGroupChatCreate({
+        mode: 'issues',
+        memberAgentIds: ['a'],
+        orchestrator: { vendor: 'claude', model: 'sonnet', providerId: 'p' }
+    })
+    assert.equal(issues.mode, 'issues')
+    assert.equal(issues.leaderAgentId, null)
+    assert.ok(issues.orchestrator)
+})
+
 test('resolveGroupChatCreate rejects an agent team orchestrator and a missing leader', () => {
     assert.throws(
         () =>

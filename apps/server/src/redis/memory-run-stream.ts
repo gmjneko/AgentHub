@@ -68,6 +68,16 @@ export class MemoryRunStream<T extends RunEvent> {
         return result
     }
 
+    getActiveByPrefix(prefix: string): Map<string, string> {
+        const result = new Map<string, string>()
+        for (const [owner] of this.active) {
+            if (!owner.startsWith(prefix)) continue
+            const runId = this.getActive(owner)
+            if (runId) result.set(owner.slice(prefix.length), runId)
+        }
+        return result
+    }
+
     publish(runId: string, event: T): void {
         if (this.destroyed) return
         const state = this.state(runId) ?? this.createState(runId)

@@ -59,6 +59,10 @@ export class GroupRunStream implements OnModuleInit, OnModuleDestroy {
         return `group:${groupId}:activerun`
     }
 
+    private activeIssueKey(groupId: string, issueId: string): string {
+        return `group:${groupId}:issue:${issueId}:activerun`
+    }
+
     private runGroupKey(runId: string): string {
         return `group:run:${runId}:group`
     }
@@ -92,6 +96,45 @@ export class GroupRunStream implements OnModuleInit, OnModuleDestroy {
         if (!this.redis) return this.memory!.release(groupId, runId)
         const current = await this.redis.get(this.activeKey(groupId))
         if (current === runId) await this.redis.del(this.activeKey(groupId))
+    }
+
+    async acquireIssueRun(groupId: string, issueId: string, runId: string): Promise<string> {
+        const owner = `${groupId}:${issueId}`
+        if (!this.redis) return this.memory!.acquire(owner, runId)
+        const key = this.activeIssueKey(groupId, issueId)
+        const ok = await this.redis.set(key, runId, 'EX', GroupRunStream.ACTIVE_TTL_SEC, 'NX')
+        if (ok === 'OK') {
+            await this.redis.set(this.runGroupKey(runId), groupId, 'EX', GroupRunStream.ACTIVE_TTL_SEC)
+            return runId
+        }
+        return (await this.redis.get(key)) ?? runId
+    }
+
+    async releaseIssueRun(groupId: string, issueId: string, runId: string): Promise<void> {
+        if (!this.redis) return this.memory!.release(`${groupId}:${issueId}`, runId)
+        const key = this.activeIssueKey(groupId, issueId)
+        if ((await this.redis.get(key)) === runId) await this.redis.del(key)
+    }
+
+    async getActiveIssueRun(groupId: string, issueId: string): Promise<string | null> {
+        if (!this.redis) return this.memory!.getActive(`${groupId}:${issueId}`)
+        return this.redis.get(this.activeIssueKey(groupId, issueId))
+    }
+
+    async getActiveIssueRuns(groupId: string): Promise<Map<string, string>> {
+        if (!this.redis) return this.memory!.getActiveByPrefix(`${groupId}:`)
+        let cursor = '0'
+        const result = new Map<string, string>()
+        do {
+            const [next, keys] = await this.redis.scan(cursor, 'MATCH', `group:${groupId}:issue:*:activerun`, 'COUNT', 100)
+            cursor = next
+            for (const key of keys) {
+                const runId = await this.redis.get(key)
+                const match = key.match(new RegExp(`^group:${groupId}:issue:(.+):activerun$`))
+                if (runId && match?.[1]) result.set(match[1], runId)
+            }
+        } while (cursor !== '0')
+        return result
     }
 
     async abandonRun(groupId: string, runId: string): Promise<void> {

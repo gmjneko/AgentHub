@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common'
+import { Injectable, Optional } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { DataSource, In, Repository } from 'typeorm'
 import type {
@@ -25,11 +25,14 @@ import { BlackboardTaskEntity } from './blackboard/entities/blackboard-task.enti
 import { BlackboardEventEntity } from './blackboard/entities/blackboard-event.entity.js'
 import { AgentMemoryItemEntity } from './memory/entities/agent-memory-item.entity.js'
 import { GroupInboxMessage } from './entities/group-inbox-message.entity.js'
+import { GroupIssue } from './entities/group-issue.entity.js'
+import { GroupIssueComment } from './entities/group-issue-comment.entity.js'
 import { GroupWorkspaceService } from './group-workspace.service.js'
 import { WorkspaceDiffService } from '../workspace/workspace-diff.service.js'
 import { GroupRunStream } from './run/group-run-stream.service.js'
 import { resolveGroupChatCreate } from './run/agent-team-create.js'
 import { toGroupChatView } from './mappers/group-chat.mapper.js'
+import { toGroupIssueView } from './mappers/group-issue.mapper.js'
 import { UserWorkspaceService } from '../../user-workspace/user-workspace.service.js'
 
 /**
@@ -54,7 +57,9 @@ export class GroupChatService {
         private readonly policy: AgentPolicyService,
         private readonly providers: PlatformProviderService,
         private readonly runStream: GroupRunStream,
-        private readonly dataSource: DataSource
+        private readonly dataSource: DataSource,
+        @InjectRepository(GroupIssue)
+        @Optional() private readonly issueRepo: Repository<GroupIssue> | null = null
     ) {}
 
     async createGroupChat(userId: string, payload: CreateGroupChatPayload): Promise<GroupChatView> {
@@ -150,7 +155,9 @@ export class GroupChatService {
         const views: GroupChatView[] = []
         for (const group of groups) {
             const members = await this.listMembersWithAgents(group.id)
-            views.push(toGroupChatView(group, members, activeRuns.get(group.id) ?? null))
+            const issueRuns = group.mode === 'issues' ? await this.runStream.getActiveIssueRuns(group.id) : new Map<string, string>()
+            const issueSummaries = group.mode === 'issues' ? await this.issueSummaries(group, issueRuns) : []
+            views.push({ ...toGroupChatView(group, members, activeRuns.get(group.id) ?? null, [...issueRuns.values()]), issueSummaries })
         }
         return views
     }
@@ -158,8 +165,12 @@ export class GroupChatService {
     async getGroupChat(userId: string, id: string): Promise<GroupChatView> {
         const group = await this.loadGroup(userId, id)
         const members = await this.listMembersWithAgents(group.id)
-        const activeRunId = await this.runStream.getActiveRun(group.id)
-        return toGroupChatView(group, members, activeRunId)
+        const activeRunId = group.mode === 'issues'
+            ? [...(await this.runStream.getActiveIssueRuns(group.id)).values()][0] ?? null
+            : await this.runStream.getActiveRun(group.id)
+        const issueRuns = group.mode === 'issues' ? await this.runStream.getActiveIssueRuns(group.id) : new Map<string, string>()
+        const issueSummaries = group.mode === 'issues' ? await this.issueSummaries(group, issueRuns) : []
+        return { ...toGroupChatView(group, members, activeRunId, [...issueRuns.values()]), issueSummaries }
     }
 
     async updateGroupChat(
@@ -197,8 +208,12 @@ export class GroupChatService {
         }
 
         const members = await this.listMembersWithAgents(group.id)
-        const activeRunId = await this.runStream.getActiveRun(group.id)
-        return toGroupChatView(group, members, activeRunId)
+        const activeRunId = group.mode === 'issues'
+            ? [...(await this.runStream.getActiveIssueRuns(group.id)).values()][0] ?? null
+            : await this.runStream.getActiveRun(group.id)
+        const issueRuns = group.mode === 'issues' ? await this.runStream.getActiveIssueRuns(group.id) : new Map<string, string>()
+        const issueSummaries = group.mode === 'issues' ? await this.issueSummaries(group, issueRuns) : []
+        return { ...toGroupChatView(group, members, activeRunId, [...issueRuns.values()]), issueSummaries }
     }
 
     async deleteGroupChat(userId: string, id: string): Promise<{ deleted: true }> {
@@ -232,6 +247,8 @@ export class GroupChatService {
             await m.delete(BlackboardEventEntity, { groupChatId: group.id })
             await m.delete(AgentMemoryItemEntity, { scopeProject: group.id })
             await m.delete(GroupInboxMessage, { groupId: group.id })
+            await m.delete(GroupIssueComment, { groupChatId: group.id })
+            await m.delete(GroupIssue, { groupChatId: group.id })
             await m.delete(GroupChat, { id: group.id, userId })
         })
         await this.workspace.removeWorkspace(group.id, group.workspaceDir)
@@ -309,5 +326,11 @@ export class GroupChatService {
         }
         this.policy.assertVendorProviderCompatible(orchestrator.vendor, provider.type)
         this.policy.assertModelInList(orchestrator.model, provider.modelList)
+    }
+
+    private async issueSummaries(group: GroupChat, activeRuns: Map<string, string>) {
+        if (!this.issueRepo) return []
+        const issues = await this.issueRepo.find({ where: { groupChatId: group.id }, order: { updatedAt: 'DESC' }, take: 50 })
+        return issues.map((issue) => toGroupIssueView(issue, [], activeRuns.get(issue.id) ?? null))
     }
 }

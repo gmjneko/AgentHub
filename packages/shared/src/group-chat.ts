@@ -11,6 +11,7 @@ import type { AgentVendor, AgentCapabilities, AgentEvent } from './agent.js'
 import type { BlackboardTaskNode, BlackboardTaskStatus, BlackboardUpdate, BlackboardArtifact } from './blackboard.js'
 import type { DeployManifest } from './deployment.js'
 import type { MessageReplyRef } from './chat.js'
+import type { GroupIssueView } from './issues.js'
 
 // —— Project meta (lives on the group chat, not a separate table) ——
 
@@ -67,7 +68,7 @@ export interface GroupMemberView {
 export type GroupChatStatus = 'active' | 'archived'
 
 /** `standard` keeps the Orchestrator. `agent_team` uses a member leader and inboxes. */
-export type GroupChatMode = 'standard' | 'agent_team'
+export type GroupChatMode = 'standard' | 'agent_team' | 'issues'
 
 export interface GroupChatView {
   id: string
@@ -88,6 +89,10 @@ export interface GroupChatView {
   projectMeta: ProjectMeta
   /** in-progress group run; null when idle (used to subscribe on open) */
   activeRunId: string | null
+  /** active Issue runs in issues mode; empty for legacy modes */
+  activeIssueRunIds?: string[]
+  /** lightweight Issue summaries for the group inspector */
+  issueSummaries?: GroupIssueView[]
   createdAt: string
   updatedAt: string
 }
@@ -168,6 +173,19 @@ export type GroupRunEvent =
       runId: string
       routeKind: GroupRouteKind
       tasks: BlackboardTaskNode[]
+    }
+  | {
+      type: 'issue_status'
+      runId: string
+      issueId: string
+      status: import('./issues.js').GroupIssueStatus
+      summary?: string
+    }
+  | {
+      type: 'issue_comment'
+      runId: string
+      issueId: string
+      comment: import('./issues.js').GroupIssueCommentView
     }
   | {
       type: 'task_status'

@@ -103,6 +103,16 @@ export function toGroupMessageView(
                     ? (payload.artifacts as BlackboardArtifact[])
                     : []
             }
+        case 'issue-event':
+            return {
+                ...base,
+                kind: 'issue-event',
+                issueId: typeof payload.issueId === 'string' ? payload.issueId : '',
+                event: (typeof payload.event === 'string' ? payload.event : 'status') as 'created' | 'assigned' | 'status' | 'comment',
+                title: typeof payload.title === 'string' ? payload.title : '',
+                status: typeof payload.status === 'string' ? payload.status as never : undefined,
+                summary: message.text ?? undefined
+            }
         case 'text':
         default: {
             const replyTo = toReplyRef(message.replyTo)

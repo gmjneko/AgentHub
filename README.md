@@ -10,13 +10,13 @@
 | --- | --- |
 | **IM 聊天式交互** | 左侧统一会话列表（单聊 + 群聊），支持新建/置顶/归档/搜索；消息支持文本、代码块、图片、文件、网页/Diff/部署卡片；聊天历史自动作为上下文持续传递 |
 | **单聊模式** | 1v1 与单个 Agent 对话，适合明确任务（如「用 Claude Code 写一个 React 组件」），流式回复 + 工作区 git diff/commit |
-| **群聊协作** | 一个对话内 @ 多个 Agent，由主 Agent（Orchestrator）理解意图、拆解任务、分派给子 Agent，并聚合产出在聊天流中汇报。子 Agent 在隔离 worktree 中执行。建群也可选 Agent Team：指定成员当队长，发言进入群聊和其他成员的 Inbox，下一轮再判断要不要说 |
+| **群聊协作** | 支持 standard DAG、Agent Team 与 issues 三种模式。Issue 模式以群内 Issue 和评论时间线为协作载体，分配、评论和 @mention 会唤醒 Orchestrator 或成员 Agent；子 Agent 在隔离 worktree 中执行 |
 | **多 Agent 接入** | 统一适配器层抹平 API 差异，至少接入 Claude Code + Codex；支持用户自建 Agent（System Prompt + 工具集），每个 Agent 是一个独立「联系人」 |
 | **产物预览与编辑** | 回复中内联产物卡片（网页 iframe、文档渲染等），点击展开预览或编辑；text/html 产物可写回工作区文件 |
 
----
+> **群聊实现进度**：现有 standard 模式保留 DAG 并行调度，新增 issues 模式，以群内 Issue、独立评论时间线、负责人分配和 @mention 触发 Agent/Orchestrator 运行。详见 [`doc/spec/group-chat-issues-collaboration.md`](doc/spec/group-chat-issues-collaboration.md)。
 
-### [ => 详见已实现的功能清单](./功能清单.md)
+---
 
 ## 🧱 技术栈
 
@@ -127,3 +127,8 @@ pnpm -F @agenthub/agent-core build    # Agent 引擎 → dist/
 | [`packages/agent-core/README.md`](packages/agent-core/README.md) | Agent 引擎说明 |
 | [`doc/`](doc/) | 产品设计、spec、plan |
 
+---
+
+## 📦 交付物
+
+产品设计文档 + 技术文档 + 可运行 Demo + AI 协作开发记录 + 3 分钟 Demo 视频。

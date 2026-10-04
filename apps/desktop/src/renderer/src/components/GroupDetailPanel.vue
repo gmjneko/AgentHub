@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type {
   BlackboardArtifact,
   BlackboardTaskStatus,
@@ -7,7 +7,9 @@ import type {
   GroupChatView,
   GroupMemberView,
   WorkspaceDiffSummary
+  ,GroupIssueView
 } from '../api'
+import { groupChatApi } from '../api/group-chats'
 import {
   decisionStatusLabel,
   decisionStatusTone,
@@ -80,6 +82,46 @@ const titleClass = computed(() => (isInspector.value ? 'text-lg' : 'text-xl'))
 const visibleArtifacts = computed(
   () => props.blackboard?.artifacts.filter(shouldShowBlackboardArtifact) ?? []
 )
+const issues = ref<GroupIssueView[]>([])
+const issueTitle = ref('')
+const selectedIssue = ref<GroupIssueView | null>(null)
+const issueComment = ref('')
+const issueLoading = ref(false)
+const isIssuesMode = computed(() => props.group?.mode === 'issues')
+
+async function loadIssues(): Promise<void> {
+  if (!props.group || !isIssuesMode.value) {
+    issues.value = []
+    return
+  }
+  issueLoading.value = true
+  try {
+    issues.value = await groupChatApi.listIssues(props.group.id)
+  } finally {
+    issueLoading.value = false
+  }
+}
+
+async function createIssue(): Promise<void> {
+  if (!props.group || !issueTitle.value.trim()) return
+  await groupChatApi.createIssue(props.group.id, { title: issueTitle.value.trim() })
+  issueTitle.value = ''
+  await loadIssues()
+}
+
+async function openIssue(issue: GroupIssueView): Promise<void> {
+  if (!props.group) return
+  selectedIssue.value = await groupChatApi.getIssue(props.group.id, issue.id)
+}
+
+async function addIssueComment(): Promise<void> {
+  if (!props.group || !selectedIssue.value || !issueComment.value.trim()) return
+  await groupChatApi.addIssueComment(props.group.id, selectedIssue.value.id, { body: issueComment.value.trim() })
+  issueComment.value = ''
+  await openIssue(selectedIssue.value)
+}
+
+watch(() => props.group?.id, () => void loadIssues(), { immediate: true })
 </script>
 
 <template>
@@ -214,6 +256,34 @@ const visibleArtifacts = computed(
           </div>
         </InspectorSection>
 
+        <InspectorSection v-if="isIssuesMode" title="Issues" icon="assignment">
+          <div class="mb-3 flex gap-2">
+            <input v-model="issueTitle" class="min-w-0 flex-1 rounded border border-surface-border px-2 py-1 text-sm" placeholder="新 Issue 标题" @keyup.enter="createIssue" />
+            <button type="button" class="rounded bg-primary px-2 py-1 text-xs text-white" @click="createIssue">创建</button>
+          </div>
+          <p v-if="issueLoading" class="text-sm text-text-muted">Issue 加载中…</p>
+          <p v-else-if="issues.length === 0" class="text-sm text-text-muted">暂无 Issue</p>
+          <div v-else class="space-y-2">
+            <button v-for="issue in issues" :key="issue.id" type="button" class="block w-full rounded border border-surface-border px-2 py-2 text-left" @click="openIssue(issue)">
+              <div class="flex items-start justify-between gap-2">
+                <div class="min-w-0 truncate text-sm font-medium text-text-main">{{ issue.title }}</div>
+                <span class="shrink-0 rounded bg-surface-hover px-1.5 py-0.5 text-[10px] text-text-muted">{{ issue.status }}</span>
+              </div>
+              <div class="mt-1 text-xs text-text-muted">{{ issue.comments.length }} 条评论</div>
+            </button>
+          </div>
+          <div v-if="selectedIssue" class="mt-3 rounded border border-primary/30 bg-primary-soft/30 p-2">
+            <div class="mb-2 text-xs font-semibold text-text-main">{{ selectedIssue.title }}</div>
+            <div class="max-h-40 space-y-1 overflow-y-auto">
+              <div v-for="comment in selectedIssue.comments" :key="comment.id" class="text-xs text-text-muted">{{ comment.body }}</div>
+            </div>
+            <div class="mt-2 flex gap-1.5">
+              <input v-model="issueComment" class="min-w-0 flex-1 rounded border border-surface-border px-2 py-1 text-xs" placeholder="添加评论" @keyup.enter="addIssueComment" />
+              <button type="button" class="rounded bg-primary px-2 py-1 text-xs text-white" @click="addIssueComment">发送</button>
+            </div>
+          </div>
+        </InspectorSection>
+
         <InspectorSection
           title="产物"
           icon="deployed_code"
@@ -271,7 +341,7 @@ const visibleArtifacts = computed(
               <span
                 class="flex-shrink-0 rounded bg-primary-soft px-1.5 py-0.5 text-xs font-medium text-primary"
               >
-                {{ group.mode === 'agent_team' ? 'Agent Team' : '群聊' }}
+                {{ group.mode === 'agent_team' ? 'Agent Team' : group.mode === 'issues' ? 'Issues' : '群聊' }}
               </span>
             </div>
             <div class="mt-1 truncate text-sm text-text-muted">

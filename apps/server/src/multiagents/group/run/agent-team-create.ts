@@ -11,7 +11,7 @@ export interface ResolvedGroupChatCreate {
     orchestrator: OrchestratorConfigInput | null
 }
 
-/** 建群模式校验。普通群聊要 Orchestrator；Agent Team 要队长且不接受 Orchestrator。 */
+/** 建群模式校验。standard/issues 要 Orchestrator；Agent Team 要队长且不接受 Orchestrator。 */
 export function resolveGroupChatCreate(
     payload: Pick<
         CreateGroupChatPayload,
@@ -32,11 +32,11 @@ export function resolveGroupChatCreate(
         }
         return { mode, leaderAgentId, orchestrator: null }
     }
-    if (mode !== 'standard') {
+    if (mode !== 'standard' && mode !== 'issues') {
         throw BusinessException.badRequest(`Unknown group chat mode: ${String(mode)}`)
     }
     if (!payload.orchestrator) {
         throw BusinessException.badRequest('Orchestrator config is required')
     }
-    return { mode: 'standard', leaderAgentId: null, orchestrator: payload.orchestrator }
+    return { mode, leaderAgentId: null, orchestrator: payload.orchestrator }
 }

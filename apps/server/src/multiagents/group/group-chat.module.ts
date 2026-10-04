@@ -18,6 +18,8 @@ import { GroupMessage } from './entities/group-message.entity.js'
 import { GroupRun } from './entities/group-run.entity.js'
 import { GroupAttachment } from './entities/group-attachment.entity.js'
 import { GroupInboxMessage } from './entities/group-inbox-message.entity.js'
+import { GroupIssue } from './entities/group-issue.entity.js'
+import { GroupIssueComment } from './entities/group-issue-comment.entity.js'
 import { BlackboardArtifactEntity } from './blackboard/entities/blackboard-artifact.entity.js'
 import { BlackboardDecisionEntity } from './blackboard/entities/blackboard-decision.entity.js'
 import { BlackboardContractEntity } from './blackboard/entities/blackboard-contract.entity.js'
@@ -45,6 +47,8 @@ import { DispatchService } from './run/dispatch.service.js'
 import { MemberChatService } from './run/member-chat.service.js'
 import { AgentTeamRunService } from './run/agent-team-run.service.js'
 import { GroupInboxService } from './run/group-inbox.service.js'
+import { IssueRuntimeService } from './run/issue-runtime.service.js'
+import { GroupIssueService } from './group-issue.service.js'
 import { GroupRunExecutor } from './run/group-run.executor.js'
 import { OrchestratorMailboxService } from './run/orchestrator-mailbox.service.js'
 import { LlmOrchestratorExecutor, ORCHESTRATOR_PLANNER } from './run/orchestrator-executor.js'
@@ -78,6 +82,8 @@ import { AgentInteractionModule } from '../interactions/agent-interaction.module
             GroupRun,
             GroupAttachment,
             GroupInboxMessage,
+            GroupIssue,
+            GroupIssueComment,
             BlackboardArtifactEntity,
             BlackboardDecisionEntity,
             BlackboardContractEntity,
@@ -116,6 +122,8 @@ import { AgentInteractionModule } from '../interactions/agent-interaction.module
         DispatchService,
         MemberChatService,
         GroupInboxService,
+        GroupIssueService,
+        IssueRuntimeService,
         AgentTeamRunService,
         GroupRunExecutor,
         OrchestratorMailboxService,

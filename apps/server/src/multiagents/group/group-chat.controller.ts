@@ -33,6 +33,8 @@ import type {
     GroupAttachmentPreview,
     GroupAttachmentView,
     GroupChatView,
+    GroupIssueCommentView,
+    GroupIssueView,
     GroupMessageView,
     WorkspaceCommitResult,
     WorkspaceDiffSummary
@@ -58,6 +60,8 @@ import {
     GroupAttachmentViewDto
 } from './dto/group-attachment-response.dto.js'
 import { GroupMessageViewDto } from './dto/group-message-response.dto.js'
+import { CreateGroupIssueCommentDto, CreateGroupIssueDto, UpdateGroupIssueDto } from './dto/group-issue.dto.js'
+import { GroupIssueCommentViewDto, GroupIssueViewDto } from './dto/group-issue-response.dto.js'
 import {
     BlackboardArtifactPreviewDto,
     BlackboardEventViewDto,
@@ -131,6 +135,60 @@ export class GroupChatController {
     @ApiEnvelope(DeleteGroupChatResultDto)
     remove(@CurrentUser() user: User, @Param('id') id: string): Promise<{ deleted: true }> {
         return this.manager.deleteGroupChat(user.id, id)
+    }
+
+    @Get(':id/issues')
+    @ApiOperation({ summary: '查询群内 Issue' })
+    @ApiEnvelope(GroupIssueViewDto, { isArray: true })
+    listIssues(
+        @CurrentUser() user: User,
+        @Param('id') id: string,
+        @Query('status') status?: string,
+        @Query('assigneeId') assigneeId?: string
+    ): Promise<GroupIssueView[]> {
+        return this.manager.listIssues(user.id, id, status, assigneeId)
+    }
+
+    @Post(':id/issues')
+    @ApiOperation({ summary: '创建 Issue' })
+    @ApiEnvelope(GroupIssueViewDto, { status: 201 })
+    createIssue(@CurrentUser() user: User, @Param('id') id: string, @Body() dto: CreateGroupIssueDto): Promise<GroupIssueView> {
+        return this.manager.createIssue(user.id, id, dto)
+    }
+
+    @Get(':id/issues/:issueId')
+    @ApiOperation({ summary: '查询 Issue 详情' })
+    @ApiEnvelope(GroupIssueViewDto)
+    getIssue(@CurrentUser() user: User, @Param('id') id: string, @Param('issueId') issueId: string): Promise<GroupIssueView> {
+        return this.manager.getIssue(user.id, id, issueId)
+    }
+
+    @Patch(':id/issues/:issueId')
+    @ApiOperation({ summary: '修改 Issue' })
+    @ApiEnvelope(GroupIssueViewDto)
+    updateIssue(@CurrentUser() user: User, @Param('id') id: string, @Param('issueId') issueId: string, @Body() dto: UpdateGroupIssueDto): Promise<GroupIssueView> {
+        return this.manager.updateIssue(user.id, id, issueId, dto)
+    }
+
+    @Get(':id/issues/:issueId/comments')
+    @ApiOperation({ summary: '查询 Issue 评论时间线' })
+    @ApiEnvelope(GroupIssueCommentViewDto, { isArray: true })
+    listIssueComments(@CurrentUser() user: User, @Param('id') id: string, @Param('issueId') issueId: string): Promise<GroupIssueCommentView[]> {
+        return this.manager.listIssueComments(user.id, id, issueId)
+    }
+
+    @Post(':id/issues/:issueId/comments')
+    @ApiOperation({ summary: '新增 Issue 评论并触发运行' })
+    @ApiEnvelope(GroupIssueCommentViewDto, { status: 201 })
+    addIssueComment(@CurrentUser() user: User, @Param('id') id: string, @Param('issueId') issueId: string, @Body() dto: CreateGroupIssueCommentDto): Promise<GroupIssueCommentView> {
+        return this.manager.addIssueComment(user.id, id, issueId, dto)
+    }
+
+    @Post(':id/messages/:messageId/issue')
+    @ApiOperation({ summary: '将群消息转换为 Issue' })
+    @ApiEnvelope(GroupIssueViewDto, { status: 201 })
+    convertMessageToIssue(@CurrentUser() user: User, @Param('id') id: string, @Param('messageId') messageId: string): Promise<GroupIssueView> {
+        return this.manager.convertMessageToIssue(user.id, id, messageId)
     }
 
     // —— 群聊会话 ——

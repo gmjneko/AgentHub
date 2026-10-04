@@ -250,6 +250,15 @@ export interface GroupDeployMessageView extends GroupMessageBase {
   artifacts: BlackboardArtifact[]
 }
 
+export interface GroupIssueEventMessageView extends GroupMessageBase {
+  kind: 'issue-event'
+  issueId: string
+  event: 'created' | 'assigned' | 'status' | 'comment'
+  title: string
+  status?: import('./issues.js').GroupIssueStatus
+  summary?: string
+}
+
 export type GroupMessageView =
   | GroupTextMessageView
   | GroupSystemMessageView
@@ -257,6 +266,7 @@ export type GroupMessageView =
   | GroupOptionsMessageView
   | GroupAgentQuestionView
   | GroupDeployMessageView
+  | GroupIssueEventMessageView
 
 export interface ChatDetail {
   id: string
