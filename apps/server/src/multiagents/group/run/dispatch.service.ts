@@ -6,7 +6,6 @@ import { Repository } from 'typeorm'
 import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
 import type {
-    AgentMemoryType,
     AgentQuestion,
     BlackboardArtifactType,
     BlackboardUpdate,
@@ -44,6 +43,9 @@ import { GroupChatMember } from '../entities/group-chat-member.entity.js'
 import { GroupRunStream } from './group-run-stream.service.js'
 import { GroupDebugLogger } from '../debug/group-debug-logger.service.js'
 import { OrchestratorMailboxService } from './orchestrator-mailbox.service.js'
+import { LayeredMemoryService } from '../../memory/layered-memory.service.js'
+import { routeMemoryCandidate } from '../../memory/layered-memory.logic.js'
+import { renderIssueRosterPrompt, type IssuePeer } from './issue-handoff.js'
 
 /** 成员收尾结构化报告（成员不直接写库，服务端据此 + git diff 代写黑板） */
 interface MemberReport {
@@ -61,7 +63,7 @@ interface MemberReport {
         approvalRequired?: boolean
         consumers?: string[]
     }>
-    memory_candidate?: { content: string; type?: AgentMemoryType; module?: string | null }
+    memory_candidate?: { content: string; type?: string; module?: string | null }
     /** 成员需要向用户确认信息时置 true：任务将被挂起，等用户答复后在同一会话恢复 */
     awaiting_user_input?: boolean
     /** 抛给用户的问题一句话摘要（预览/无结构化问题时的回退正文） */
@@ -82,6 +84,8 @@ export interface DispatchParams {
     member: GroupChatMember
     continuity: ContinuityResult
     signal: AbortSignal
+    /** Issue 派发时带上同群其他成员，供摘要末尾 @ 交接。 */
+    issuePeers?: IssuePeer[]
 }
 
 /** 派发收尾时需要 Orchestrator/用户裁决的冲突（受保护契约 / 工作区合并 / 产出物版本）。 */
@@ -108,6 +112,7 @@ const REPORT_INSTRUCTION = `
 参数示例：
 {"summary":"面向用户的交付摘要：详细说明完成了什么、产物/入口在哪里、关键能力与验证结果；如有偏差或注意事项也要写清楚。不要在 summary 里写 JSON/report/code fence。","affected":{"artifacts":["新增或修改的产出物工作区相对路径；无产出物才留空"],"contracts":[],"decisions":[]},"decisions":[],"contracts":[],"memory_candidate":null}
 summary 会作为群聊里该成员最终消息的正文展示给用户，所以你要把最终输出的信息再从这里写一遍，然后在最后加上总结，但不要粘贴完整文件、日志或内部 report。
+memory_candidate.type 可以是 preference、code_style、convention、decision、lesson、project_knowledge、work_done。preference 和 code_style 记成用户长期记忆；convention 和 decision 记成当前工作区记忆。
 凡是本轮创建或修改了可交付文件（代码、页面、文档、设计稿、测试报告等），必须把它们作为产出物记录到 affected.artifacts，使用工作区相对路径；这些路径会被服务端写入黑板产出物，侧边栏“产出物”只依赖黑板记录展示。
 只有确有内容才填 decisions / contracts / memory_candidate。不要修改他人 owner 的 approvalRequired 契约。
 
@@ -149,7 +154,8 @@ export class DispatchService {
         private readonly runStream: GroupRunStream,
         private readonly debug: GroupDebugLogger,
         private readonly interactions: AgentInteractionService,
-        private readonly mailbox: OrchestratorMailboxService
+        private readonly mailbox: OrchestratorMailboxService,
+        private readonly layeredMemory: LayeredMemoryService
     ) {}
 
     async dispatch(params: DispatchParams): Promise<DispatchResult> {
@@ -168,6 +174,8 @@ export class DispatchService {
         const assembled = await this.assembler.assemble({
             groupId: group.id,
             agentId: agent.id,
+            userId,
+            workspaceDir: group.workspaceDir,
             task: taskContext,
             scope: { project: group.id, module: member.roleInGroup },
             targetArtifacts: params.continuity.targetArtifactPaths,
@@ -254,7 +262,12 @@ export class DispatchService {
         }
 
         // 3. 跑成员 turn（复用适配层 + 消息历史）
-        const prompt = `${assembled.prompt}${REPORT_INSTRUCTION}`
+        const peerPrompt = params.issuePeers?.length
+            ? renderIssueRosterPrompt(params.issuePeers)
+            : ''
+        const prompt = [assembled.prompt, peerPrompt, REPORT_INSTRUCTION]
+            .filter(Boolean)
+            .join('\n\n')
         this.debug.log('group.dispatch.agent_instruction', {
             groupId: group.id,
             runId,
@@ -569,9 +582,22 @@ export class DispatchService {
 
         const deadline = new TurnDeadline(DEFAULT_TURN_TIMEOUT_MS, params.signal)
         const turnId = randomUUID()
-        const onInteraction: import('../../adapter/index.js').SendOptions['onInteraction'] = (event, signal) => deadline.waitForInput(async () => {
-            return this.interactions.request({ userId: params.userId, sessionId: session.id, turnId, groupId: params.group.id }, event, signal)
-        })
+        const onInteraction: import('../../adapter/index.js').SendOptions['onInteraction'] = (
+            event,
+            signal
+        ) =>
+            deadline.waitForInput(async () => {
+                return this.interactions.request(
+                    {
+                        userId: params.userId,
+                        sessionId: session.id,
+                        turnId,
+                        groupId: params.group.id
+                    },
+                    event,
+                    signal
+                )
+            })
 
         await this.messages.saveMessage(
             params.userId,
@@ -594,14 +620,16 @@ export class DispatchService {
                 },
                 deadline.signal,
                 async () => {
-                    const iterator = adapter.send(prompt, { signal: deadline.signal, turnId, onInteraction })[Symbol.asyncIterator]()
+                    const iterator = adapter
+                        .send(prompt, { signal: deadline.signal, turnId, onInteraction })
+                        [Symbol.asyncIterator]()
                     while (true) {
                         const next = await Promise.race([iterator.next(), deadline.expired])
                         if (next.done) break
                         const ev = next.value
                         events.push(ev)
                         if (ev.type === 'done') {
-                            sawDone = true;
+                            sawDone = true
                             if (!ev.success) fatal ??= 'Agent turn failed'
                             if (ev.finalText) finalFromDone = ev.finalText
                             await this.publishMemberEvent(params, ev)
@@ -764,24 +792,73 @@ export class DispatchService {
                 op: 'created',
                 summary: `决策：${saved.content.slice(0, 40)}`
             })
+            await this.rememberWorkspaceDecision(
+                userId,
+                group.workspaceDir,
+                saved.content,
+                saved.id
+            )
         }
 
         const candidate = report.memory_candidate
         if (candidate?.content) {
-            const memory = await this.memory.writeCandidate(agent.id, userId, {
-                content: candidate.content,
-                type: candidate.type ?? 'lesson',
-                scope: { project: group.id, module: candidate.module ?? params.member.roleInGroup },
-                source: { type: 'self_summary', ref: params.taskId }
+            try {
+                const routed = routeMemoryCandidate(candidate.type)
+                const memory =
+                    routed.kind === 'long_term'
+                        ? await this.layeredMemory.writeLongTerm(
+                              userId,
+                              routed.type,
+                              candidate.content,
+                              {
+                                  type: 'agent',
+                                  ref: params.taskId
+                              }
+                          )
+                        : routed.kind === 'workspace'
+                          ? await this.layeredMemory.writeWorkspace(
+                                userId,
+                                group.workspaceDir,
+                                routed.type,
+                                candidate.content,
+                                { type: 'agent', ref: params.taskId }
+                            )
+                          : await this.memory.writeCandidate(agent.id, userId, {
+                                content: candidate.content,
+                                type: routed.type,
+                                scope: {
+                                    project: group.id,
+                                    module: candidate.module ?? params.member.roleInGroup
+                                },
+                                source: { type: 'self_summary', ref: params.taskId }
+                            })
+                this.debug.log('group.dispatch.memory_candidate', {
+                    groupId: group.id,
+                    runId: params.runId,
+                    taskId: params.taskId,
+                    agentId: agent.id,
+                    candidate,
+                    savedMemory: memory
+                })
+            } catch (err) {
+                this.logger.warn(`memory candidate skipped: ${this.errMsg(err)}`)
+            }
+        }
+    }
+
+    private async rememberWorkspaceDecision(
+        userId: string,
+        workspaceDir: string,
+        content: string,
+        decisionId: string
+    ): Promise<void> {
+        try {
+            await this.layeredMemory.writeWorkspace(userId, workspaceDir, 'decision', content, {
+                type: 'blackboard',
+                ref: decisionId
             })
-            this.debug.log('group.dispatch.memory_candidate', {
-                groupId: group.id,
-                runId: params.runId,
-                taskId: params.taskId,
-                agentId: agent.id,
-                candidate,
-                savedMemory: memory
-            })
+        } catch (err) {
+            this.logger.warn(`workspace decision memory skipped: ${this.errMsg(err)}`)
         }
     }
 

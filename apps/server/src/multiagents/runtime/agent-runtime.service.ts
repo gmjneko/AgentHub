@@ -22,6 +22,7 @@ import { AgentArtifactService } from './agent-artifact.service.js'
 import type { BlackboardArtifact, DeployManifest } from '@agenthub/shared'
 
 import { AgentInteractionService } from '../interactions/agent-interaction.service.js'
+import { LayeredMemoryService } from '../memory/layered-memory.service.js'
 
 interface RunningTurn {
     sessionId: string
@@ -55,7 +56,8 @@ export class AgentRuntimeService implements OnModuleInit, OnModuleDestroy {
         private readonly config: ConfigService,
         private readonly localRunner: LocalRunnerGateway,
         private readonly artifacts: AgentArtifactService,
-        private readonly interactions: AgentInteractionService
+        private readonly interactions: AgentInteractionService,
+        private readonly layeredMemory: LayeredMemoryService
     ) {
         this.maxLive = this.config.get<number>('AGENT_MAX_LIVE', 30)
         this.maxLiveCodex = this.config.get<number>('AGENT_MAX_LIVE_CODEX', 8)
@@ -175,8 +177,12 @@ export class AgentRuntimeService implements OnModuleInit, OnModuleDestroy {
         replyTo: MessageReplyRef | null
     ): Promise<string> {
         const pinnedContext = await this.messages.pinnedContext(session.userId, session.id)
+        const memoryContext = await this.layeredMemory.promptBlock(
+            session.userId,
+            session.workingDirectory
+        )
         const quotedPrompt = await this.buildQuotedPrompt(session, prompt, replyTo)
-        return [pinnedContext, quotedPrompt].filter(Boolean).join('\n\n')
+        return [memoryContext, pinnedContext, quotedPrompt].filter(Boolean).join('\n\n')
     }
 
     /** 单聊引用前言：被引用消息原文（服务端为准，回退 excerpt）作为 `>` 引用块拼到 prompt 前。 */
@@ -266,8 +272,17 @@ export class AgentRuntimeService implements OnModuleInit, OnModuleDestroy {
         const deadline = new TurnDeadline(this.turnTimeoutMs, abort.signal)
         try {
             const iterator = live.adapter
-                .send(prompt, { signal: deadline.signal, turnId,
-                    onInteraction: (event, signal) => deadline.waitForInput(() => this.interactions.request({ userId: session.userId, sessionId: session.id, turnId }, event, signal))
+                .send(prompt, {
+                    signal: deadline.signal,
+                    turnId,
+                    onInteraction: (event, signal) =>
+                        deadline.waitForInput(() =>
+                            this.interactions.request(
+                                { userId: session.userId, sessionId: session.id, turnId },
+                                event,
+                                signal
+                            )
+                        )
                 })
                 [Symbol.asyncIterator]()
             while (true) {
@@ -354,10 +369,10 @@ export class AgentRuntimeService implements OnModuleInit, OnModuleDestroy {
                 type: 'done',
                 vendor: session.vendor,
                 turnId,
-                ...(terminalDone?.structuredOutput !== undefined ? { structuredOutput: terminalDone.structuredOutput } : {}),
-                success: terminalDone
-                    ? terminalDone.success && !fatalErrorMessage
-                    : false,
+                ...(terminalDone?.structuredOutput !== undefined
+                    ? { structuredOutput: terminalDone.structuredOutput }
+                    : {}),
+                success: terminalDone ? terminalDone.success && !fatalErrorMessage : false,
                 ...(finalText ? { finalText } : {}),
                 ...(terminalDone?.usage ? { usage: terminalDone.usage } : {})
             }
@@ -475,7 +490,8 @@ export class AgentRuntimeService implements OnModuleInit, OnModuleDestroy {
             id: session.id,
             ...(agent.model !== LOCAL_DEFAULT_MODEL ? { model: agent.model } : {}),
             workingDirectory: session.workingDirectory,
-            reasoningEffort: (agent.reasoningEffort as LocalRunConfig['reasoningEffort']) ?? undefined,
+            reasoningEffort:
+                (agent.reasoningEffort as LocalRunConfig['reasoningEffort']) ?? undefined,
             systemPrompt: agent.systemPrompt ?? undefined,
             skills: session.skills ?? undefined,
             mcpServers: session.mcpServers ?? undefined,

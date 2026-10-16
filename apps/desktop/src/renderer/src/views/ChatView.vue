@@ -153,6 +153,7 @@ const pendingReply = ref<MessageReplyRef | null>(null)
 const messageListRef = ref<InstanceType<typeof MessageList> | null>(null)
 const messageInputRef = ref<InstanceType<typeof MessageInput> | null>(null)
 const runtime = ref<AgentRuntimeState>(idleRuntime())
+const issueFeed = ref(0)
 const activeWorkspaceDiff = ref<WorkspaceDiffSummary | null>(null)
 const workspaceDiffLoading = ref(false)
 const workspaceDiffError = ref<string | null>(null)
@@ -2007,6 +2008,12 @@ function handleGroupRuntimeEvent(event: GroupRunEvent): void {
     case 'orchestrator_report':
       runtime.value = { ...runtime.value, phase: 'streaming', label: '汇总中', detail: event.text }
       return
+    case 'issue_status':
+      runtime.value = { ...runtime.value, phase: 'thinking', label: `Issue：${event.status}` }
+      return
+    case 'issue_comment':
+      runtime.value = { ...runtime.value, phase: 'streaming', label: 'Issue 有新评论' }
+      return
     case 'deploy_card':
       runtime.value = { ...runtime.value, phase: 'thinking', label: '已产出可预览交付' }
       return
@@ -2138,6 +2145,17 @@ function buildGroupRunHandlers(
         }
       } else if (event.type === 'deploy_card') {
         appendDeployCard(group, event.manifest, event.artifacts)
+      } else if (event.type === 'issue_comment') {
+        issueFeed.value += 1
+        appendSystemMessage(key, `Issue 评论：${event.comment.body}`)
+      } else if (event.type === 'issue_status') {
+        issueFeed.value += 1
+        appendSystemMessage(
+          key,
+          event.summary
+            ? `Issue 状态变为 ${event.status}：${event.summary}`
+            : `Issue 状态变为 ${event.status}`
+        )
       } else if (event.type === 'done') {
         finishGroupRunMessages(groupId, runId, event.success)
       }
@@ -2178,11 +2196,20 @@ function buildGroupRunHandlers(
 async function reloadAfterGroupRun(groupId: string): Promise<void> {
   const key = groupSessionKey(groupId)
   await refreshChats()
+  if (groupChats.value.find((item) => item.id === groupId)?.mode === 'issues') {
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    await refreshChats()
+    issueFeed.value += 1
+  }
   await Promise.all([
     loadMessages(key, true),
     loadGroupBlackboard(groupId),
     loadWorkspaceDiff(key, true)
   ])
+}
+
+function followIssueActivity(groupId: string): void {
+  void reloadAfterGroupRun(groupId)
 }
 
 async function reloadAfterGroupStreamDrop(groupId: string): Promise<void> {
@@ -2828,6 +2855,7 @@ onUnmounted(() => {
           :group="activeGroup"
           :blackboard="activeGroupBlackboard"
           mode="inspector"
+          :issue-feed="issueFeed"
           :diff="activeWorkspaceDiff"
           :diff-loading="workspaceDiffLoading"
           :diff-error="workspaceDiffError"
@@ -2836,6 +2864,7 @@ onUnmounted(() => {
           @open-artifact="previewArtifact = $event"
           @refresh-diff="refreshActiveWorkspaceDiff"
           @commit-diff="commitActiveWorkspaceDiff"
+          @issue-changed="followIssueActivity(activeGroup.id)"
         />
         <RightInspector
           v-else

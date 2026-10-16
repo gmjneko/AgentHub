@@ -38,6 +38,13 @@ import {
     type OrchestratorContext,
     type OrchestratorExecutor
 } from './orchestrator-executor.js'
+import {
+    ISSUE_HANDOFF_LIMIT_NOTE,
+    collectIssueHandoff,
+    renderIssueRosterPrompt,
+    type IssueHandoffComment,
+    type IssuePeer
+} from './issue-handoff.js'
 
 interface MemberPair {
     member: GroupChatMember
@@ -107,7 +114,8 @@ export class GroupRunExecutor implements OnModuleInit {
         userId: string,
         issueId: string,
         userText: string,
-        mentionedAgentIds: string[]
+        mentionedAgentIds: string[],
+        handoffDepth = 0
     ): Promise<{ runId: string } | null> {
         const issue = await this.issues.get(group, issueId)
         const runId = randomUUID()
@@ -126,13 +134,29 @@ export class GroupRunExecutor implements OnModuleInit {
                 userText
             })
         )
-        await this.issues.updateRuntime(group, issue.id, { lastRunId: runId, status: issue.status === 'todo' ? 'in_progress' : undefined })
+        await this.issues.updateRuntime(group, issue.id, {
+            lastRunId: runId,
+            status: issue.status === 'todo' ? 'in_progress' : undefined
+        })
+        const handoffNotes: IssueHandoffComment[] = []
+        const alreadyRan: string[] = []
+        let nextHandoff: { text: string; mentions: string[] } | null = null
         try {
             const members = await this.groupChat.listMembersWithAgents(group.id)
+            const peers: IssuePeer[] = members.map(({ member, agent }) => ({
+                agentId: agent.id,
+                name: agent.name,
+                roleInGroup: member.roleInGroup,
+                capabilitySummary: agent.capabilitySummary ?? null
+            }))
             const byAgent = new Map(members.map((pair) => [pair.agent.id, pair]))
             const targets = mentionedAgentIds.filter((id) => id !== 'orchestrator')
-            const shouldOrchestrate = mentionedAgentIds.includes('orchestrator') || targets.length === 0 && issue.assigneeType !== 'agent'
+            const shouldOrchestrate =
+                mentionedAgentIds.includes('orchestrator') ||
+                (targets.length === 0 && issue.assigneeType !== 'agent')
+            const roster = renderIssueRosterPrompt(peers)
             if (shouldOrchestrate) {
+                alreadyRan.push('orchestrator')
                 const context: OrchestratorContext = {
                     projectGoal: group.projectGoal,
                     blackboardSummary: await this.blackboard.summarize(group.id),
@@ -146,10 +170,11 @@ export class GroupRunExecutor implements OnModuleInit {
                     })),
                     activeTaskGraph: []
                 }
+                const issueBody = `Issue: ${issue.title}\n${issue.description ?? ''}\n\n最新信息：${userText}`
                 const decision = await this.issuePlanner.decide({
                     group,
                     userId,
-                    userText: `Issue: ${issue.title}\n${issue.description ?? ''}\n\n最新信息：${userText}`,
+                    userText: [issueBody, roster].filter(Boolean).join('\n\n'),
                     routeKind: 'orchestrate',
                     mentionedAgentIds,
                     context,
@@ -157,77 +182,246 @@ export class GroupRunExecutor implements OnModuleInit {
                     signal: abort.signal
                 })
                 if (decision.tasks.length === 0) {
-                    const text = decision.displayText?.trim() || decision.note?.trim() || 'Issue 已收到，等待下一步。'
-                    const comment = await this.issues.addRuntimeComment(group, issue.id, text, 'orchestrator', null, runId)
-                    await this.runStream.publish(runId, { type: 'issue_comment', runId, issueId: issue.id, comment })
+                    const text =
+                        decision.displayText?.trim() ||
+                        decision.note?.trim() ||
+                        'Issue 已收到，等待下一步。'
+                    const comment = await this.issues.addRuntimeComment(
+                        group,
+                        issue.id,
+                        text,
+                        'orchestrator',
+                        null,
+                        runId
+                    )
+                    handoffNotes.push({
+                        authorAgentId: null,
+                        authorRole: 'orchestrator',
+                        body: text
+                    })
+                    await this.runStream.publish(runId, {
+                        type: 'issue_comment',
+                        runId,
+                        issueId: issue.id,
+                        comment
+                    })
                     await this.issues.updateRuntime(group, issue.id, { status: 'in_review' })
-                    await this.runStream.publish(runId, { type: 'issue_status', runId, issueId: issue.id, status: 'in_review', summary: text })
+                    await this.runStream.publish(runId, {
+                        type: 'issue_status',
+                        runId,
+                        issueId: issue.id,
+                        status: 'in_review',
+                        summary: text
+                    })
                 } else {
                     for (const task of decision.tasks) {
                         if (abort.signal.aborted) break
                         const pair = byAgent.get(task.agentId)
                         if (!pair) continue
-                        const result = await this.dispatch.dispatch({
+                        const result = await this.dispatchMemberIssue(
                             group,
                             userId,
                             runId,
-                            taskId: randomUUID(),
-                            taskName: task.name,
-                            objective: task.objective,
-                            agent: pair.agent,
-                            member: pair.member,
-                            continuity: { case: 'C', targetArtifactPaths: [], hotContext: null, needsOrchestratorJudgement: false },
-                            signal: abort.signal
+                            abort.signal,
+                            pair,
+                            task.name,
+                            task.objective,
+                            peers
+                        )
+                        const comment = await this.issues.addRuntimeComment(
+                            group,
+                            issue.id,
+                            result.summary,
+                            'agent',
+                            pair.agent.id,
+                            runId
+                        )
+                        handoffNotes.push({
+                            authorAgentId: pair.agent.id,
+                            authorRole: 'agent',
+                            body: result.summary
                         })
-                        const comment = await this.issues.addRuntimeComment(group, issue.id, result.summary, 'agent', pair.agent.id, runId)
-                        await this.runStream.publish(runId, { type: 'issue_comment', runId, issueId: issue.id, comment })
+                        alreadyRan.push(pair.agent.id)
+                        await this.runStream.publish(runId, {
+                            type: 'issue_comment',
+                            runId,
+                            issueId: issue.id,
+                            comment
+                        })
                         if (!result.success) {
-                            await this.issues.updateRuntime(group, issue.id, { status: 'blocked', blockedReason: result.summary })
-                            await this.runStream.publish(runId, { type: 'issue_status', runId, issueId: issue.id, status: 'blocked', summary: result.summary })
+                            await this.issues.updateRuntime(group, issue.id, {
+                                status: 'blocked',
+                                blockedReason: result.summary
+                            })
+                            await this.runStream.publish(runId, {
+                                type: 'issue_status',
+                                runId,
+                                issueId: issue.id,
+                                status: 'blocked',
+                                summary: result.summary
+                            })
                             break
                         }
                     }
                     if ((await this.issues.get(group, issue.id)).status !== 'blocked') {
                         await this.issues.updateRuntime(group, issue.id, { status: 'in_review' })
-                        await this.runStream.publish(runId, { type: 'issue_status', runId, issueId: issue.id, status: 'in_review' })
+                        await this.runStream.publish(runId, {
+                            type: 'issue_status',
+                            runId,
+                            issueId: issue.id,
+                            status: 'in_review'
+                        })
                     }
                 }
             } else {
                 for (const agentId of targets.length ? targets : [issue.assigneeId!]) {
                     const pair = byAgent.get(agentId)
                     if (!pair) continue
-                    const result = await this.dispatch.dispatch({
+                    const result = await this.dispatchMemberIssue(
                         group,
                         userId,
                         runId,
-                        taskId: randomUUID(),
-                        taskName: issue.title,
-                        objective: `${issue.description ?? ''}\n\n最新信息：${userText}`,
-                        agent: pair.agent,
-                        member: pair.member,
-                        continuity: { case: 'C', targetArtifactPaths: [], hotContext: null, needsOrchestratorJudgement: false },
-                        signal: abort.signal
+                        abort.signal,
+                        pair,
+                        issue.title,
+                        `${issue.description ?? ''}\n\n最新信息：${userText}`,
+                        peers
+                    )
+                    const comment = await this.issues.addRuntimeComment(
+                        group,
+                        issue.id,
+                        result.summary,
+                        'agent',
+                        pair.agent.id,
+                        runId
+                    )
+                    handoffNotes.push({
+                        authorAgentId: pair.agent.id,
+                        authorRole: 'agent',
+                        body: result.summary
                     })
-                    const comment = await this.issues.addRuntimeComment(group, issue.id, result.summary, 'agent', pair.agent.id, runId)
-                    await this.runStream.publish(runId, { type: 'issue_comment', runId, issueId: issue.id, comment })
-                    await this.issues.updateRuntime(group, issue.id, { status: result.success ? 'in_review' : 'blocked', blockedReason: result.success ? null : result.summary })
-                    await this.runStream.publish(runId, { type: 'issue_status', runId, issueId: issue.id, status: result.success ? 'in_review' : 'blocked', summary: result.summary })
+                    alreadyRan.push(pair.agent.id)
+                    await this.runStream.publish(runId, {
+                        type: 'issue_comment',
+                        runId,
+                        issueId: issue.id,
+                        comment
+                    })
+                    await this.issues.updateRuntime(group, issue.id, {
+                        status: result.success ? 'in_review' : 'blocked',
+                        blockedReason: result.success ? null : result.summary
+                    })
+                    await this.runStream.publish(runId, {
+                        type: 'issue_status',
+                        runId,
+                        issueId: issue.id,
+                        status: result.success ? 'in_review' : 'blocked',
+                        summary: result.summary
+                    })
                 }
             }
+            const latest = await this.issues.get(group, issue.id)
+            const collected =
+                abort.signal.aborted || latest.status === 'blocked'
+                    ? null
+                    : collectIssueHandoff({
+                          comments: handoffNotes,
+                          members: peers.map((peer) => ({ agentId: peer.agentId, name: peer.name })),
+                          alreadyRan,
+                          depth: handoffDepth
+                      })
+            if (collected && 'limitReached' in collected) {
+                const comment = await this.issues.addRuntimeComment(
+                    group,
+                    issue.id,
+                    ISSUE_HANDOFF_LIMIT_NOTE,
+                    'system',
+                    null,
+                    runId
+                )
+                await this.runStream.publish(runId, {
+                    type: 'issue_comment',
+                    runId,
+                    issueId: issue.id,
+                    comment
+                })
+            } else if (collected) {
+                nextHandoff = collected
+            }
             await this.runRepo.update({ id: runId }, { status: 'done', endedAt: new Date() })
-            await this.runStream.publish(runId, { type: 'done', runId, success: !abort.signal.aborted })
+            await this.runStream.publish(runId, {
+                type: 'done',
+                runId,
+                success: !abort.signal.aborted
+            })
         } catch (error) {
             const message = this.errMsg(error)
-            await this.issues.updateRuntime(group, issue.id, { status: 'blocked', blockedReason: message }).catch(() => undefined)
-            await this.issues.addRuntimeComment(group, issue.id, `Issue 运行失败：${message}`, 'system', null, runId).catch(() => undefined)
-            await this.runRepo.update({ id: runId }, { status: 'failed', endedAt: new Date() }).catch(() => undefined)
-            await this.runStream.publish(runId, { type: 'done', runId, success: false }).catch(() => undefined)
+            nextHandoff = null
+            await this.issues
+                .updateRuntime(group, issue.id, { status: 'blocked', blockedReason: message })
+                .catch(() => undefined)
+            await this.issues
+                .addRuntimeComment(
+                    group,
+                    issue.id,
+                    `Issue 运行失败：${message}`,
+                    'system',
+                    null,
+                    runId
+                )
+                .catch(() => undefined)
+            await this.runRepo
+                .update({ id: runId }, { status: 'failed', endedAt: new Date() })
+                .catch(() => undefined)
+            await this.runStream
+                .publish(runId, { type: 'done', runId, success: false })
+                .catch(() => undefined)
         } finally {
             this.runningRuns.delete(runId)
             await this.runStream.releaseIssueRun(group.id, issue.id, runId)
             await this.runStream.finalize(runId)
         }
+        if (nextHandoff) {
+            await this.startIssueRun(
+                group,
+                userId,
+                issue.id,
+                nextHandoff.text,
+                nextHandoff.mentions,
+                handoffDepth + 1
+            )
+        }
         return { runId }
+    }
+
+    private dispatchMemberIssue(
+        group: GroupChat,
+        userId: string,
+        runId: string,
+        signal: AbortSignal,
+        pair: MemberPair,
+        taskName: string,
+        objective: string,
+        peers: IssuePeer[]
+    ): Promise<DispatchResult> {
+        return this.dispatch.dispatch({
+            group,
+            userId,
+            runId,
+            taskId: randomUUID(),
+            taskName,
+            objective,
+            agent: pair.agent,
+            member: pair.member,
+            continuity: {
+                case: 'C',
+                targetArtifactPaths: [],
+                hotContext: null,
+                needsOrchestratorJudgement: false
+            },
+            signal,
+            issuePeers: peers.filter((peer) => peer.agentId !== pair.agent.id)
+        })
     }
 
     onModuleInit(): void {
@@ -268,7 +462,13 @@ export class GroupRunExecutor implements OnModuleInit {
                 assigneeType: 'orchestrator'
             })
             await this.groupMessages.appendText(group.id, userId, 'user', text)
-            const started = await this.startIssueRun(group, userId, issue.id, text, payload.mentions ?? [])
+            const started = await this.startIssueRun(
+                group,
+                userId,
+                issue.id,
+                text,
+                payload.mentions ?? []
+            )
             if (!started) {
                 throw BusinessException.conflict('Issue already has an active run', {
                     reason: 'ISSUE_BUSY',

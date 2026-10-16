@@ -4,6 +4,7 @@ import { BlackboardService } from '../blackboard/blackboard.service.js'
 import { AgentMemoryService, type MemoryScope } from '../memory/agent-memory.service.js'
 import { GroupDebugLogger } from '../debug/group-debug-logger.service.js'
 import { GroupMessageService } from '../group-message.service.js'
+import { LayeredMemoryService } from '../../memory/layered-memory.service.js'
 
 export type DispatchMode = 'new_task' | 'modify_existing'
 
@@ -26,6 +27,9 @@ export interface HotContext {
 export interface ContextAssemblerInput {
     groupId: string
     agentId: string
+    /** 注入长期记忆与工作区记忆。缺省时跳过，避免旧调用点被迫带上用户。 */
+    userId?: string
+    workspaceDir?: string | null
     task: TaskContext
     scope: MemoryScope
     /** 目标产出物路径（read_before_edit 的对象） */
@@ -78,7 +82,8 @@ export class ContextAssembler {
         private readonly blackboard: BlackboardService,
         private readonly memory: AgentMemoryService,
         private readonly groupMessages: GroupMessageService,
-        private readonly debug: GroupDebugLogger
+        private readonly debug: GroupDebugLogger,
+        private readonly layered: LayeredMemoryService
     ) {}
 
     async assemble(input: ContextAssemblerInput): Promise<ContextAssemblerOutput> {
@@ -110,6 +115,10 @@ export class ContextAssembler {
         keepSections.push(this.renderArtifactWritebackPolicy())
         const pinnedContext = await this.groupMessages.pinnedContext(input.groupId)
         if (pinnedContext) keepSections.push(pinnedContext)
+        if (input.userId) {
+            const layered = await this.layered.promptBlock(input.userId, input.workspaceDir)
+            if (layered) keepSections.push(layered)
+        }
         if (targetArtifacts.length) keepSections.push(this.renderTargetArtifacts(targetArtifacts))
         if (contracts.length) keepSections.push(this.renderContracts(contracts))
 

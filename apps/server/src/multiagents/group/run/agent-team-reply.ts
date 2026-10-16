@@ -62,6 +62,7 @@ export function buildTeamTurnPrompt(input: {
     roster: Array<{ name: string; isLeader: boolean }>
     inboxText: string
     pinnedContext: string
+    memoryContext?: string
     nudge: TeamNudge
 }): string {
     const role = input.isLeader ? '队长' : '队员'
@@ -75,6 +76,7 @@ export function buildTeamTurnPrompt(input: {
               ? '你上一次没有发言。请继续跟队友讨论，或者直接给用户一个结论或提问。'
               : ''
     return [
+        input.memoryContext ?? '',
         input.pinnedContext,
         `你是群聊「${input.groupTitle}」的${role}「${input.speakerName}」。`,
         `项目：${input.projectName}`,

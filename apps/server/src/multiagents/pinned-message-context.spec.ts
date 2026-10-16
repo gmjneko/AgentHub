@@ -175,6 +175,7 @@ test('single-chat SDK prompt prepends pinned context before quoted prompt', asyn
             pinnedContext(userId: string, sessionId: string): Promise<string>
             getMessageText(userId: string, sessionId: string, messageId: string): Promise<string>
         }
+        layeredMemory: { promptBlock(userId: string, workspaceDir: string | null): Promise<string> }
         buildSdkPrompt(
             session: AgentSession,
             prompt: string,
@@ -185,6 +186,7 @@ test('single-chat SDK prompt prepends pinned context before quoted prompt', asyn
         pinnedContext: async () => '# Pinned messages (会话内全局上下文)\n- 固定约束',
         getMessageText: async () => '被引用消息原文'
     }
+    runtime.layeredMemory = { promptBlock: async () => '' }
 
     const prompt = await runtime.buildSdkPrompt(
         { id: 'session-1', userId: 'user-1' } as AgentSession,
@@ -237,7 +239,8 @@ test('group orchestrator, task context, and lightweight member chat include pinn
             blackboardSnapshot: (value: unknown) => value,
             compactText: (value: string) => value,
             log: () => undefined
-        } as never
+        } as never,
+        { promptBlock: async () => '' } as never
     )
     const assembled = await assembler.assemble({
         groupId: 'group-1',

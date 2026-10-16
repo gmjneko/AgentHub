@@ -46,6 +46,7 @@ apps/desktop/
             ├── api/                     # 后端 HTTP/SSE 客户端
             │   ├── http.ts              # 核心请求助手：经 proxy 解信封、抛 ApiError、处理 401
             │   ├── auth.ts              # 用户模块客户端（/api/user/*）：注册/登录/登出/me/update
+            │   ├── memories.ts          # 长期记忆与工作区记忆（/api/user/memories）
             │   ├── agents.ts            # Agent + 单聊客户端，含 converse SSE、workspace diff/commit
             │   ├── group-chats.ts       # 群聊客户端：消息/运行/黑板/Issue/部署/附件上传与预览 + SSE
             │   ├── providers.ts         # Provider 客户端（/api/platform-providers/*）：CRUD/测连/刷新模型

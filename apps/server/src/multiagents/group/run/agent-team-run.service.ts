@@ -26,6 +26,7 @@ import {
     type TeamInboxEntry,
     type TeamNudge
 } from './agent-team-reply.js'
+import { LayeredMemoryService } from '../../memory/layered-memory.service.js'
 
 const TEAM_TURN_TIMEOUT_MS = 30 * 60 * 1000
 
@@ -63,7 +64,8 @@ export class AgentTeamRunService {
         private readonly groupMessages: GroupMessageService,
         private readonly inbox: GroupInboxService,
         private readonly runStream: GroupRunStream,
-        private readonly debug: GroupDebugLogger
+        private readonly debug: GroupDebugLogger,
+        private readonly layeredMemory: LayeredMemoryService
     ) {}
 
     async run(params: AgentTeamRunParams): Promise<AgentTeamRunResult> {
@@ -87,6 +89,10 @@ export class AgentTeamRunService {
         })
 
         const pinnedContext = await this.groupMessages.pinnedContext(params.group.id)
+        const memoryContext = await this.layeredMemory.promptBlock(
+            params.userId,
+            params.group.workspaceDir
+        )
         const stop = await runTeamDiscussion(seats, {
             loadInbox: (agentId) => this.inbox.loadUnconsumed(params.group.id, agentId),
             consume: (ids) => this.inbox.consume(ids),
@@ -114,7 +120,7 @@ export class AgentTeamRunService {
                 await this.groupMessages.appendSystem(params.group.id, params.userId, text)
             },
             speak: (seat, inbox, nudge) =>
-                this.speak(params, seats, seat, inbox, nudge, pinnedContext),
+                this.speak(params, seats, seat, inbox, nudge, pinnedContext, memoryContext),
             aborted: () => params.signal.aborted
         })
 
@@ -135,7 +141,8 @@ export class AgentTeamRunService {
         seat: TeamSeat,
         inbox: TeamInboxEntry[],
         nudge: TeamNudge,
-        pinnedContext: string
+        pinnedContext: string,
+        memoryContext: string
     ): Promise<string> {
         const pair = params.members.find((item) => item.agent.id === seat.agentId)
         if (!pair) throw new Error(`Member ${seat.agentId} is not in this group`)
@@ -148,6 +155,7 @@ export class AgentTeamRunService {
             roster: seats.map((item) => ({ name: item.name, isLeader: item.isLeader })),
             inboxText: renderInbox(inbox),
             pinnedContext,
+            memoryContext,
             nudge
         })
         this.debug.log('group.agent_team.prompt', {

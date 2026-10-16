@@ -62,6 +62,7 @@ import {
 } from './run/orchestrator-handoff-reviewer.js'
 import { GroupDebugLogger } from './debug/group-debug-logger.service.js'
 import { AgentInteractionModule } from '../interactions/agent-interaction.module.js'
+import { LayeredMemoryModule } from '../memory/layered-memory.module.js'
 
 /**
  * GroupChatModule — 群聊协作（黑板 / Orchestrator / dispatch）。
@@ -98,8 +99,9 @@ import { AgentInteractionModule } from '../interactions/agent-interaction.module
         UserModule,
         UserWorkspaceModule,
         PlatformProviderModule,
-        ChatClientModule
-        ,AgentInteractionModule
+        ChatClientModule,
+        AgentInteractionModule,
+        LayeredMemoryModule
     ],
     controllers: [GroupChatController],
     providers: [

@@ -22,6 +22,7 @@ import { AgentMessage } from './entities/agent-message.entity.js'
 import { AgentMessageStep } from './entities/agent-message-step.entity.js'
 import { GroupChatMember } from './group/entities/group-chat-member.entity.js'
 import { AgentInteractionModule } from './interactions/agent-interaction.module.js'
+import { LayeredMemoryModule } from './memory/layered-memory.module.js'
 
 /**
  * AgentsModule — 用户虚拟员工管理。
@@ -42,8 +43,9 @@ import { AgentInteractionModule } from './interactions/agent-interaction.module.
         ]),
         UserModule,
         UserWorkspaceModule,
-        PlatformProviderModule
-        ,AgentInteractionModule
+        PlatformProviderModule,
+        AgentInteractionModule,
+        LayeredMemoryModule
     ],
     controllers: [AgentsController, AgentChatsController],
     providers: [

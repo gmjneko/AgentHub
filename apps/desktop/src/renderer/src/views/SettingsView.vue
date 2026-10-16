@@ -6,11 +6,13 @@ import ProviderList from '../components/ProviderList.vue'
 import ProviderDetail from '../components/ProviderDetail.vue'
 import ProviderEditDialog from '../components/ProviderEditDialog.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import MemorySettings from '../components/MemorySettings.vue'
 
-type SettingsSection = 'platform-provider'
+type SettingsSection = 'platform-provider' | 'memory'
 
 const SECTIONS: { key: SettingsSection; label: string; icon: string }[] = [
-  { key: 'platform-provider', label: 'PlatformProvider', icon: 'cloud' }
+  { key: 'platform-provider', label: 'PlatformProvider', icon: 'cloud' },
+  { key: 'memory', label: '记忆', icon: 'psychology' }
 ]
 
 const section = ref<SettingsSection>('platform-provider')
@@ -121,6 +123,7 @@ onMounted(load)
         {{ loading ? '加载中…' : '选择或添加一个 Provider' }}
       </div>
     </template>
+    <MemorySettings v-else-if="section === 'memory'" />
 
     <p
       v-if="error"

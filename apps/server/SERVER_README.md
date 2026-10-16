@@ -438,6 +438,8 @@ src/multiagents/group/
 - 一次群运行 = 一条 Redis Stream（`GroupRunStream`，按单聊 `TurnStream` 范式），成员 turn 事件经 `member_turn_event` 透传，天然多端围观；活跃指针 `SET NX` 做「群」级跨实例互斥（已有活跃轮 → 返回冲突，引导用 `activeRunId` 围观）。
 - 群聊主体保存 `isPinned` 与 `archivedAt`：置顶状态跨端一致；`archivedAt` 非空或 `status=archived` 时群聊只读，服务端拒绝新的 `converse`。
 - 群聊消息保存 `pinned`：它是当前群聊内的固定上下文，不跨群共享；Pin/Unpin 只改消息标注，归档群也允许操作。后续 Orchestrator 决策、成员 task `ContextAssembler`、轻量成员聊天都会注入 `# Pinned messages (群聊内全局上下文)` 摘要块。
+- 分层记忆在 `multiagents/memory/`：长期记忆按用户，工作区记忆按目录真实路径。单聊、ContextAssembler 和 Agent Team 会注入；群内 `agent_memory_item` 仍是 Agent 私有记忆。
+- Issue 成员摘要里的 `@名称` 会在本轮锁释放后串行唤醒下一个成员，最多自动交接 8 次，且不改变 Issue 负责人。
 - 成员干活复用单聊适配层（`createAgent` + `agentToConfig`）和 `scope=group` 的成员内部 `AgentSession`，`workingDirectory` 指向该任务的 git worktree；私有 L1 落 `agent_message` / `agent_message_step`，但不会进入 `/agent-chats` 单聊列表。轻量成员聊天（例如打招呼、给一句观点）走 `memberTurns`，真实调用成员 Agent，但不创建黑板 task、不建 worktree、不做 report/diff；展示与落库只认 `submit_member_chat`。成员向编排器请示走阻塞式 `report_for_orchestrator`，编排器用 `send_to_member` 回成员或 `ask_user` 问用户（interaction 卡片，不新开 converse）。某个成员未提交时不中断其余成员。
 - 成员 task 成功返回后，会先经过隐藏交接判断（不写展示消息、不推 `orchestrator_report`）：该判断使用无状态 `ChatClient`，不会复用或污染 `group_chat.orchestratorSessionId`，并会携带成员 `roleInGroup` / `capabilitySummary`、Orchestrator 分配的任务目标、成员最终输出和直接下游任务。若成员实际是在用普通文本向用户澄清/提问，即使没有按 `report.awaiting_user_input` 格式声明，也会把该 task 标为 `waiting_input`，下游 task 不启动，群运行静默等待用户回复。
 - 多阶段任务会在每阶段 task graph 全部完成后做有限续编排：服务端把阶段结果交回 Orchestrator 判断原始需求是否已真正交付；若前一阶段只是 PRD/方案/调研，会继续派发实现/验证等下游任务，避免前置规划完成后提前收尾。

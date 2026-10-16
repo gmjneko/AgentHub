@@ -2,6 +2,7 @@
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import type { MessageReplyRef } from '../api'
 import type { MentionTarget } from '../types/mentions'
+import { extractMentionIds } from '../utils/mentions'
 import { formatBytes } from '../utils/format'
 import AgentAvatar from './AgentAvatar.vue'
 import BaseButton from './ui/BaseButton.vue'
@@ -90,7 +91,7 @@ function submit(): void {
   const rawText = text.value
   const trimmed = rawText.trim()
   if (!trimmed && files.value.length === 0) return
-  const mentions = extractMentionIds(rawText)
+  const mentions = extractMentionIds(rawText, normalizedMentionTargets.value)
   emit('send', {
     text: trimmed || DEFAULT_ATTACHMENT_ONLY_TEXT,
     replyTo: props.replyTo ?? undefined,
@@ -326,22 +327,6 @@ function onDrop(event: DragEvent): void {
   event.preventDefault()
   dragActive.value = false
   addFiles(event.dataTransfer?.files ?? null)
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-function extractMentionIds(value: string): string[] {
-  const ids = new Set<string>()
-  for (const target of normalizedMentionTargets.value) {
-    const pattern = new RegExp(
-      `(^|[\\s([{（，。！？、；：,.!?;:])@${escapeRegExp(target.label)}(?= )`,
-      'u'
-    )
-    if (pattern.test(value)) ids.add(target.id)
-  }
-  return [...ids]
 }
 
 defineExpose({ insertMentionById })

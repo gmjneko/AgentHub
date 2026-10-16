@@ -1,11 +1,9 @@
 import { Injectable } from '@nestjs/common'
 import type { GroupRouteKind } from '@agenthub/shared'
+import { ORCHESTRATOR_TOKENS, parseMentionTokens, type MentionMember } from './mention-tokens.js'
 
 /** 用于解析 @ 的群成员最小信息 */
-export interface RouterMember {
-    agentId: string
-    name: string
-}
+export type RouterMember = MentionMember
 
 export interface RouteResult {
     routeKind: GroupRouteKind
@@ -13,9 +11,6 @@ export interface RouteResult {
     mentionedAgentIds: string[]
     mentionsOrchestrator: boolean
 }
-
-/** Orchestrator 的保留提及关键字（前端 @ 也可用 agentId='orchestrator'） */
-const ORCHESTRATOR_TOKENS = ['orchestrator', '编排', '编排器', 'orch']
 
 /**
  * MessageRouter — 纯机械路由：解析 @mentions，决定 routeKind。**不调 LLM、不理解语义。**
@@ -64,19 +59,7 @@ export class MessageRouter {
     }
 
     /** 从原文解析 @：匹配 Orchestrator 关键字或成员名。返回 token（agentId 或 'orchestrator'）。 */
-    private parseMentionsFromText(text: string, members: RouterMember[]): string[] {
-        const tokens: string[] = []
-        const at = /@([^\s@]+)/g
-        let match: RegExpExecArray | null
-        while ((match = at.exec(text)) !== null) {
-            const raw = match[1]
-            if (ORCHESTRATOR_TOKENS.some((t) => raw.toLowerCase().startsWith(t))) {
-                tokens.push('orchestrator')
-                continue
-            }
-            const member = members.find((m) => raw === m.name || raw.startsWith(m.name))
-            if (member) tokens.push(member.agentId)
-        }
-        return tokens
+    parseMentionsFromText(text: string, members: RouterMember[]): string[] {
+        return parseMentionTokens(text, members)
     }
 }
